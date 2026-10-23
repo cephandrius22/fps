@@ -4,6 +4,44 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 
 ---
 
+## Status (2026-10-23)
+
+**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phase 0 is done**, apart from CI, which has never run because the repo has no remote yet. See [README.md](README.md) for how the code is organized and how to build it.
+
+### Roadmap
+
+| Phase | Goal | Status |
+|---|---|---|
+| 0 — Foundations | Window, loop, GPU, low-res cube | ✅ Done (CI unverified) |
+| 0.5 — Follow-ups | Code-health items found in review | ⏳ Next |
+| 1 — First world | Fly through a lit, fogged BSP level | Not started |
+| 2 — Walking around | Collision, character controller, entities, Lua | Not started |
+| 3 — Own toolchain | `mapc`, lightmap baker, glTF props | Not started |
+| 4 — Dynamic lighting and atmosphere | Dynamic lights, flashlight shadows, fog volumes, 3D audio | Not started |
+| 5 — Living world | Animation, AI, weapons, inventory, saves: vertical slice | Not started |
+| 6 — Polish and expansion | Volumetric fog, clustered lighting, portals, menus | Not started |
+
+Section 11 has the detail for each phase.
+
+### Implemented
+
+| Area | What exists | Where |
+|---|---|---|
+| Build | Cargo workspace, one crate per layer, dependency versions set once in the root manifest | `Cargo.toml`, `crates/` |
+| Platform | winit window, OS events translated to engine `Key`/`Button`, fixed-timestep clock (60 Hz, stall cap) | `crates/platform` |
+| Renderer | wgpu device and swapchain, 640×360 low-res target with depth, nearest-neighbor letterboxed upscale (fit or integer), mesh pass with back-face culling, frame readback | `crates/render` |
+| Lighting | L0: vertex color plus a fixed sun term. The vertex format already has a lightmap UV slot. | `assets/shaders/mesh.wgsl` |
+| Engine core | Main loop, per-tick input state, `Game` trait (`init` / `tick` / `draw` with interpolation), engine-owned public types | `crates/engine` |
+| Resources | Asset filesystem (`assets/` discovery), meshes addressed by generational handles | `crates/base`, `crates/render` |
+| Hot reload | File watcher plus an asset registry. Only shaders reload so far; a bad shader is rejected and the old one stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
+| Debugging | Logging (`RUST_LOG`), `verify!` asserts, F12 screenshot, `ENGINE_CAPTURE_FRAME=N` capture-and-exit | `crates/base`, `crates/engine/src/debug.rs` |
+| Tests | 67 tests: unit tests per crate, headless GPU pixel tests, naga shader validation | `cargo test` |
+| CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows; Linux runs GPU tests on Mesa lavapipe | `.github/workflows/ci.yml` (never run) |
+
+Not implemented yet, though the plan's sections describe them: textures, maps, lightmaps, fog, the palette post-pass, collision, entities, scripting, audio.
+
+---
+
 ## 1. Goals and constraints
 
 | Requirement | What it means for the design |
@@ -41,7 +79,7 @@ How the retro look is produced:
 
 ## 3. Key decision: language and stack
 
-Both options are viable. Pick one before Phase 0.
+**Decided: Rust + wgpu, with winit for the window and input** (chosen 2026-10-23). The C column is kept for reference. Choices still open in the Rust column are listed in section 15.
 
 | | **C** | **Rust** |
 |---|---|---|
@@ -55,7 +93,7 @@ Both options are viable. Pick one before Phase 0.
 | Pros | Matches id/Abrash reference code. Fast compile. Total control. | Safer asset parsing and threading. Great tooling and package management. |
 | Cons | Manual memory management. More time spent debugging. | Ownership friction around game state. wgpu adds an abstraction layer. |
 
-Recommendation: **C + SDL3** if studying id's code is part of the fun. **Rust + wgpu** if long-term maintainability matters more. In either case, keep the renderer behind a small internal interface so the backend can change.
+Original recommendation: **C + SDL3** if studying id's code is part of the fun. **Rust + wgpu** if long-term maintainability matters more. In either case, keep the renderer behind a small internal interface so the backend can change. That interface now exists: games use `engine` types only, and wgpu stays inside `crates/render`.
 
 ---
 
@@ -74,11 +112,25 @@ Recommendation: **C + SDL3** if studying id's code is part of the fun. **Rust + 
 │  Scene → visibility → passes (shadow, opaque, fog,       │
 │  transparent, post) → retro post-processing              │
 ├──────────────────────────────────────────────────────────┤
-│            Platform: SDL3 + GPU API + filesystem         │
+│            Platform: winit + wgpu + filesystem           │
 └──────────────────────────────────────────────────────────┘
 
 Offline tools: .map compiler · lightmap baker · asset converters
 ```
+
+### As built (Phase 0)
+
+The diagram above is the target. The code maps it onto crates like this, and each crate may only call the crate directly below it:
+
+```
+game ──► engine ──┬──► render ───► wgpu     (Renderer row)
+                  └──► platform ─► winit    (Platform row)
+base: foundation utilities shared by all    (logging, asserts, Vfs, watcher)
+```
+
+- The Engine core row lives in `crates/engine`. Today that is the loop, input, the asset registry and debug hooks. Physics, audio, entities, scripting and navigation will be added there or as new crates beside `render` and `platform`.
+- The Game layer is `game/`. It uses only the `engine` API.
+- The filesystem sits in `base::Vfs`, not in the platform layer.
 
 ### Core principles
 1. **Fixed-timestep simulation** (e.g. 60 Hz). Rendering interpolates between ticks. This keeps physics stable and makes replays and networking possible later.
@@ -197,7 +249,7 @@ Audio matters a great deal in horror, so it gets planned work, not leftover time
 - Occlusion: dampen sounds behind walls (raycast against level geometry).
 - Reverb zones as brush entities, alongside fog volumes.
 - Ambient soundscapes and music layers that respond to game state.
-- Library: SDL3 audio plus a small mixer of our own, or miniaudio.
+- Library: originally SDL3 audio plus a small mixer of our own, or miniaudio. With the Rust stack the candidates are cpal plus our own mixer, or kira. Not yet decided (section 15); it is needed by Phase 4.
 
 ---
 
@@ -205,19 +257,33 @@ Audio matters a great deal in horror, so it gets planned work, not leftover time
 
 Each phase ends with something runnable.
 
-### Phase 0 — Foundations (1–2 weeks)
-- Project layout, build system (CMake or Cargo), CI on all three OSes.
-- SDL3 window, input, fixed-timestep loop.
-- GPU device setup, clear screen, render a triangle.
-- Logging, asserts, file and resource loading, hot-reload watcher.
-- **Milestone:** a spinning colored cube at low resolution with nearest-neighbor upscale.
+### Phase 0 — Foundations (1–2 weeks) — ✅ done
+- ✅ Project layout, build system (Cargo workspace).
+- ⚠️ CI on all three OSes: written, never run. Needs a GitHub remote.
+- ✅ Window, input, fixed-timestep loop (winit instead of SDL3).
+- ✅ GPU device setup, clear screen, render geometry.
+- ✅ Logging, asserts, file and resource loading.
+- 🟡 Hot-reload watcher: watches all assets, but only shaders reload. Other asset types join through the asset registry as they arrive.
+- ✅ **Milestone:** a spinning colored cube at low resolution with nearest-neighbor upscale. Verified with a captured frame on Apple M1 (Metal).
+- Beyond scope, also done: screenshot capture, a headless renderer with pixel-checking GPU tests, generational mesh handles, enforced layer boundaries, README.
+
+### Phase 0.5 — Follow-ups (days) — next
+Found in review. Each is cheaper now than once Phase 1 builds on top of it.
+- Push to GitHub and get CI green on Linux and Windows. Confirm the lavapipe GPU tests run on Linux.
+- Typed errors (`thiserror`) in the library crates, so callers can tell "no GPU" from "bad shader". `anyhow` stays in `game`.
+- Move lint settings into a root `[workspace.lints]` table instead of per-crate attributes.
+- `publish = false` on internal crates.
+- Pin the toolchain with `rust-toolchain.toml`, so local and CI clippy agree.
+- Optional: prefix crate names (e.g. `retro-render`) and switch `passes/mod.rs` to `passes.rs`.
+- **Milestone:** CI green on all three OSes.
 
 ### Phase 1 — First world (2–4 weeks)
-- Fly camera, perspective projection.
-- Textured meshes, nearest-neighbor sampling.
+- Fly camera (perspective projection already exists).
+- Textured meshes, nearest-neighbor sampling. Add texture hot reload to the asset registry.
 - Load a map: ericw-tools BSP loader as the shortcut.
-- Baked lightmaps (L1) and distance fog (F0).
-- Retro post-pass: palette LUT and dithering toggle.
+- Baked lightmaps (L1) and distance fog (F0). The vertex format already has `lightmap_uv`.
+- Retro post-pass: palette LUT and dithering toggle, in `blit.wgsl`.
+- Add a reference-image test: capture a known view of a test map and compare it against a stored PNG.
 - **Milestone:** fly through a lit, fogged TrenchBroom level that looks like 1997.
 
 ### Phase 2 — Walking around (2–4 weeks)
@@ -268,8 +334,9 @@ Build these early; they pay for themselves.
 - In-game console: commands, variables (cvars), and level loading.
 - Debug draw: lines, boxes, collision hulls, light radii, navmesh, portals.
 - Frame timing overlay (CPU and GPU).
-- Screenshot and frame-capture hooks (RenderDoc on Linux/Windows, Xcode GPU capture on macOS).
+- Screenshot and frame-capture hooks (RenderDoc on Linux/Windows, Xcode GPU capture on macOS). 🟡 Screenshots are done (F12, `ENGINE_CAPTURE_FRAME`); GPU-debugger capture hooks are not.
 - Map reload without restarting the game.
+- ✅ Shader hot reload, and a headless renderer for automated image tests.
 
 ---
 
@@ -302,7 +369,10 @@ Check storefront rules: Steam requires disclosure of AI-generated content.
 
 ## 15. Open decisions
 
-- [ ] Language: C or Rust.
+- [x] Language: **Rust + wgpu + winit** (decided 2026-10-23).
+- [ ] Audio library: cpal plus our own mixer, or kira. Needed by Phase 4.
+- [ ] Scripting binding: mlua (Lua 5.4 or LuaJIT). Needed by Phase 2.
+- [ ] Navigation: Recast bindings or a Rust port. Needed by Phase 5.
 - [ ] Entity model: light ECS or flat struct with optional components.
 - [ ] Gameplay direction: action FPS, survival horror, or a hybrid. This can wait until Phase 5.
 - [ ] Save model: save rooms, checkpoints, or save anywhere.

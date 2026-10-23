@@ -159,6 +159,9 @@ library crate's public API) and the tests on macOS, Linux and Windows.
 
 ## Roadmap
 
-See [retro-fps-engine-plan.md](retro-fps-engine-plan.md). Next is Phase 1:
+See [retro-fps-engine-plan.md](retro-fps-engine-plan.md). It starts with a
+status section: what is implemented and where each phase stands. Next is
+Phase 0.5, a set of small follow-ups found in review (CI on GitHub, typed
+errors, workspace lints, a pinned toolchain). After that comes Phase 1:
 fly camera, textured meshes, a BSP map loader, lightmaps, fog, and the
 palette/dither post-pass.
