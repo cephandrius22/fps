@@ -1,0 +1,9 @@
+[package]
+name = "game"
+description = "Game layer. Phase 0: spinning cube sandbox."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+engine.workspace = true

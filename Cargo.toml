@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "game"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+base = { path = "crates/base" }
+platform = { path = "crates/platform" }
+render = { path = "crates/render" }
+engine = { path = "crates/engine" }
+
+anyhow = "1.0.104"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+env_logger = "0.11.11"
+glam = { version = "0.34.1", features = ["bytemuck"] }
+log = "0.4.34"
+notify = "8.2.0"
+png = "0.18.1"
+pollster = "1.0.1"
+wgpu = "30.0.1"
+winit = "0.30.13"
+
+# Optimize dependencies in debug builds; keeps wgpu/naga fast while our
+# own code stays debuggable.
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,15 @@
+[package]
+name = "render"
+description = "Hand-written wgpu renderer with low-res retro output."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+log.workspace = true
+platform.workspace = true
+pollster.workspace = true
+wgpu.workspace = true
