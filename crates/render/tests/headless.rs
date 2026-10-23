@@ -150,7 +150,10 @@ fn failed_shader_load_names_the_shader() {
     let missing = |_| Err::<String, _>(std::io::Error::other("gone"));
     let err = match Renderer::headless(RenderConfig::default(), missing) {
         Ok(_) => panic!("renderer built without shader source"),
-        Err(RenderError::NoAdapter(_)) => return, // no GPU: skip
+        Err(err @ RenderError::NoAdapter(_)) => {
+            common::skip_or_fail(err);
+            return;
+        }
         Err(err) => err,
     };
 

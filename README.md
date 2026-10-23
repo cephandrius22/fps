@@ -146,9 +146,12 @@ cargo test
 | `engine` | unit tests: input edges, tick loop, asset registry, type conversion, debug hooks |
 | `game` | cube geometry: counts, bounds, outward winding |
 
-The GPU tests skip with a message when no adapter exists. Set
-`REQUIRE_GPU=1` to make that a failure; Linux CI does this and uses Mesa's
-software Vulkan driver. Not covered by unit tests: the window event loop and
+The GPU tests skip only when no GPU adapter exists; any other renderer
+failure (a broken shader, say) fails them. In CI a skip also shows up as a
+"GPU tests skipped" warning on the run's summary page. Set `REQUIRE_GPU=1`
+to make a missing GPU a failure; Linux CI does this and uses Mesa's software
+Vulkan driver. To try the no-GPU path on a Mac, run with
+`WGPU_BACKEND=vulkan`. Not covered by unit tests: the window event loop and
 presenting to a real window. Check those with `cargo run -p game` or
 `ENGINE_CAPTURE_FRAME=90 cargo run -p game`.
 
