@@ -4,7 +4,7 @@
 //!   │ bar │      640×360 × k     │ bar │
 //!   └────────────────────────────────┘
 
-use anyhow::Result;
+use crate::error::Result;
 
 use crate::Scaling;
 use crate::shader::{checked, compile};

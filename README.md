@@ -10,7 +10,9 @@ cube at 640×360, upscaled to the window.
 
 ## Quick start
 
-Requires stable Rust (2024 edition). There are no system libraries on macOS
+Requires [rustup](https://rustup.rs). The compiler version is pinned in
+`rust-toolchain.toml`, and rustup installs it on first build. There are no
+system libraries on macOS
 or Windows. On Linux, install `libxkbcommon-dev libwayland-dev libx11-dev`.
 
 ```bash
@@ -106,8 +108,14 @@ engine App::frame
 - **Handles, not references.** `MeshHandle` wraps a generational
   `base::SlotId`. A handle to a destroyed mesh is detected rather than
   silently drawing whatever reused its slot.
-- **Errors.** Fallible operations return `anyhow::Result`. Broken
-  invariants use `base::verify!`, which logs and panics only in debug builds.
+- **Errors.** Library crates return typed errors, one `thiserror` enum
+  per area (`VfsError`, `RenderError`, `EngineError`, ...), so callers can
+  match on what went wrong. Each error's message covers only its own level;
+  `base::chain(&err)` prints the full cause chain for logs. Games see only
+  `EngineError`, whose categories (`NoGpu`, `Renderer`, ...) wrap lower-layer
+  errors as opaque causes. `anyhow` is used only in the `game` binary.
+  Broken invariants use `base::verify!`, which logs and panics only in
+  debug builds.
 
 ## Making changes
 
@@ -144,8 +152,13 @@ software Vulkan driver. Not covered by unit tests: the window event loop and
 presenting to a real window. Check those with `cargo run -p game` or
 `ENGINE_CAPTURE_FRAME=90 cargo run -p game`.
 
-CI runs fmt, clippy (`-D warnings`, which enforces `missing_docs` on every
-library crate's public API) and the tests on macOS, Linux and Windows.
+CI runs fmt, clippy (`-D warnings`) and the tests on macOS, Linux and
+Windows, using the pinned toolchain. Lints are set once in the root
+`Cargo.toml` (`[workspace.lints]`): `missing_docs` warns, so CI fails on
+undocumented public API, and `unsafe_code` is forbidden.
+
+To move to a newer Rust: change `channel` in `rust-toolchain.toml`, run
+`cargo clippy --all-targets -- -D warnings`, fix any new lints, commit.
 
 ## Conventions
 
@@ -161,7 +174,7 @@ library crate's public API) and the tests on macOS, Linux and Windows.
 
 See [retro-fps-engine-plan.md](retro-fps-engine-plan.md). It starts with a
 status section: what is implemented and where each phase stands. Next is
-Phase 0.5, a set of small follow-ups found in review (CI on GitHub, typed
-errors, workspace lints, a pinned toolchain). After that comes Phase 1:
+finishing Phase 0.5: pushing to GitHub so CI can run. After that comes
+Phase 1:
 fly camera, textured meshes, a BSP map loader, lightmaps, fog, and the
 palette/dither post-pass.

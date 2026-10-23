@@ -2,8 +2,7 @@
 //! types usable by every other crate, like an extension of `std`.
 //! Nothing here knows about windows, GPUs, or game rules.
 
-#![warn(missing_docs)]
-
+pub mod error;
 pub mod image;
 pub mod keys;
 pub mod log;
@@ -11,10 +10,12 @@ pub mod slots;
 pub mod vfs;
 pub mod watch;
 
+pub use error::{BoxError, chain};
+pub use image::ImageError;
 pub use keys::{Button, Key};
 pub use slots::{SlotId, Slots};
-pub use vfs::Vfs;
-pub use watch::Watcher;
+pub use vfs::{Vfs, VfsError};
+pub use watch::{WatchError, Watcher};
 
 #[doc(hidden)]
 pub use ::log as __log;

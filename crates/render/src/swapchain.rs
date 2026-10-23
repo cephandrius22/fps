@@ -1,6 +1,6 @@
 //! Window surface (swapchain): format choice, resize, frame acquire.
 
-use anyhow::{Context, Result};
+use crate::error::{RenderError, Result};
 
 use crate::VSync;
 use crate::gpu::Gpu;
@@ -27,11 +27,11 @@ impl Swapchain {
             .copied()
             .find(wgpu::TextureFormat::is_srgb)
             .or_else(|| caps.formats.first().copied())
-            .context("surface has no formats")?;
+            .ok_or(RenderError::SurfaceUnsupported)?;
 
         let mut config = surface
             .get_default_config(&gpu.adapter, size.0.max(1), size.1.max(1))
-            .context("surface unsupported by adapter")?;
+            .ok_or(RenderError::SurfaceUnsupported)?;
         config.format = format;
         config.present_mode = present_mode(vsync);
         surface.configure(&gpu.device, &config);

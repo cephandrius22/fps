@@ -41,13 +41,18 @@ fn parse_frame(value: Option<&str>) -> Option<u64> {
 /// a failed screenshot must never stop the game.
 pub(crate) fn save_screenshot(renderer: &Renderer, name: &str) {
     let path = PathBuf::from(SCREENSHOT_DIR).join(format!("{name}.png"));
-    let result = renderer
-        .capture()
-        .and_then(|shot| base::image::write_png(&path, shot.width, shot.height, &shot.rgba));
 
-    match result {
+    let shot = match renderer.capture() {
+        Ok(shot) => shot,
+        Err(err) => {
+            log::error!("screenshot capture failed: {}", base::chain(&err));
+            return;
+        }
+    };
+
+    match base::image::write_png(&path, shot.width, shot.height, &shot.rgba) {
         Ok(()) => log::info!("screenshot: {}", path.display()),
-        Err(err) => log::error!("screenshot failed: {err:#}"),
+        Err(err) => log::error!("screenshot save failed: {}", base::chain(&err)),
     }
 }
 

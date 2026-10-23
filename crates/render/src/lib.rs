@@ -10,10 +10,9 @@
 //! comes from the caller, and any raw window handle works as a target.
 //! Headless mode skips the window and renders only the low-res target.
 
-#![warn(missing_docs)]
-
 mod camera;
 mod capture;
+mod error;
 mod gpu;
 mod mesh;
 mod passes;
@@ -23,13 +22,15 @@ mod target;
 
 use std::fmt::Debug;
 
-use anyhow::Result;
+use base::BoxError;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub use camera::Camera;
 pub use capture::Capture;
+pub use error::RenderError;
 pub use mesh::{MeshData, MeshId, Vertex};
 
+use error::Result;
 use gpu::Gpu;
 use mesh::MeshStore;
 use passes::{BlitPass, MeshPass};
@@ -136,11 +137,11 @@ pub struct Renderer {
 impl Renderer {
     /// Renderer presenting to `window`, whose drawable size is `size`
     /// (physical pixels). `source` returns WGSL for each [`Shader`].
-    pub fn new(
+    pub fn new<E: Into<BoxError>>(
         window: impl WindowTarget,
         size: (u32, u32),
         config: RenderConfig,
-        source: impl Fn(Shader) -> Result<String>,
+        source: impl Fn(Shader) -> Result<String, E>,
     ) -> Result<Self> {
         let desc =
             wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone()));
@@ -155,9 +156,9 @@ impl Renderer {
 
     /// Renderer without a window. `render` draws only the low-res target;
     /// read it back with `capture`. Fails when no GPU adapter exists.
-    pub fn headless(
+    pub fn headless<E: Into<BoxError>>(
         config: RenderConfig,
-        source: impl Fn(Shader) -> Result<String>,
+        source: impl Fn(Shader) -> Result<String, E>,
     ) -> Result<Self> {
         let desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
         let instance = wgpu::Instance::new(desc);
@@ -166,18 +167,24 @@ impl Renderer {
         Self::build(gpu, None, config, source)
     }
 
-    fn build(
+    fn build<E: Into<BoxError>>(
         gpu: Gpu,
         swapchain: Option<Swapchain>,
         config: RenderConfig,
-        source: impl Fn(Shader) -> Result<String>,
+        source: impl Fn(Shader) -> Result<String, E>,
     ) -> Result<Self> {
         let target = LowRes::new(&gpu.device, config.internal_width, config.internal_height);
 
         // Headless still builds the blit pass so its shader is validated.
         let output_format = swapchain.as_ref().map_or(COLOR_FORMAT, Swapchain::format);
-        let mesh_pass = MeshPass::new(&gpu.device, &source(Shader::Mesh)?)?;
-        let blit_pass = BlitPass::new(&gpu.device, output_format, &target, &source(Shader::Blit)?)?;
+        let load = |shader| {
+            source(shader).map_err(|err| RenderError::ShaderSource {
+                shader,
+                source: err.into(),
+            })
+        };
+        let mesh_pass = MeshPass::new(&gpu.device, &load(Shader::Mesh)?)?;
+        let blit_pass = BlitPass::new(&gpu.device, output_format, &target, &load(Shader::Blit)?)?;
 
         Ok(Self {
             gpu,

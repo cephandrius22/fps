@@ -6,18 +6,16 @@
 //!                     └──► platform ─► winit
 //!   (base: foundation utilities, usable by all)
 
-#![warn(missing_docs)]
-
 mod app;
 mod assets;
 mod debug;
+mod error;
 mod gfx;
 mod input;
 mod sim;
 
-use anyhow::Result;
-
-pub use base::{Button, Key};
+pub use base::{BoxError, Button, Key};
+pub use error::EngineError;
 pub use gfx::{Camera, Frame, Gfx, MeshData, MeshHandle, Scaling, VSync, Vertex, Video};
 pub use glam as math;
 pub use input::Input;
@@ -53,7 +51,8 @@ impl Default for Config {
 /// describes the scene, interpolating with `frame.alpha`.
 pub trait Game {
     /// Called once, after the window and GPU are up. Load resources here.
-    fn init(&mut self, gfx: &mut Gfx) -> Result<()>;
+    /// Any error type converts into `BoxError` with `?` or `.into()`.
+    fn init(&mut self, gfx: &mut Gfx) -> Result<(), BoxError>;
     /// One fixed simulation step. Read input, update state.
     fn tick(&mut self, tick: &mut Tick);
     /// Describe the frame: set the camera, queue draws. No simulation.
@@ -61,7 +60,7 @@ pub trait Game {
 }
 
 /// Runs the game until it quits or the window closes.
-pub fn run(config: Config, game: impl Game) -> Result<()> {
+pub fn run(config: Config, game: impl Game) -> Result<(), EngineError> {
     base::log::init();
     app::run(config, game)
 }

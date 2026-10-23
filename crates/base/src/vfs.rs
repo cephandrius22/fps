@@ -3,11 +3,35 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-
 /// Overrides asset root discovery.
 const ROOT_ENV: &str = "ENGINE_ASSETS";
 const ROOT_DIR: &str = "assets";
+
+/// Why an asset could not be found or read.
+#[derive(Debug, thiserror::Error)]
+pub enum VfsError {
+    /// The configured asset root does not exist or is unreadable.
+    #[error("asset root {path}")]
+    Root {
+        /// Root as given.
+        path: PathBuf,
+        /// OS error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Discovery found no `assets/` directory.
+    #[error("no `{ROOT_DIR}` directory found; set {ROOT_ENV}")]
+    NotFound,
+    /// A file inside the root could not be read.
+    #[error("read {path}")]
+    Read {
+        /// Full OS path.
+        path: PathBuf,
+        /// OS error.
+        #[source]
+        source: std::io::Error,
+    },
+}
 
 /// Read-only view of the asset directory.
 #[derive(Clone, Debug)]
@@ -17,17 +41,18 @@ pub struct Vfs {
 
 impl Vfs {
     /// Uses `root` as the asset directory. Fails if it does not exist.
-    pub fn new(root: impl AsRef<Path>) -> Result<Self> {
+    pub fn new(root: impl AsRef<Path>) -> Result<Self, VfsError> {
         let root = root.as_ref();
-        let root = root
-            .canonicalize()
-            .with_context(|| format!("asset root {}", root.display()))?;
+        let root = root.canonicalize().map_err(|source| VfsError::Root {
+            path: root.to_path_buf(),
+            source,
+        })?;
 
         Ok(Self { root })
     }
 
     /// Finds `assets/` via $ENGINE_ASSETS, then upward from the exe and cwd.
-    pub fn discover() -> Result<Self> {
+    pub fn discover() -> Result<Self, VfsError> {
         if let Ok(dir) = std::env::var(ROOT_ENV) {
             return Self::new(dir);
         }
@@ -43,7 +68,7 @@ impl Vfs {
             }
         }
 
-        bail!("no `{ROOT_DIR}` directory found; set {ROOT_ENV}")
+        Err(VfsError::NotFound)
     }
 
     /// Absolute, canonical asset directory.
@@ -52,15 +77,15 @@ impl Vfs {
     }
 
     /// Whole file as bytes. `path` is an asset path, e.g. "textures/a.png".
-    pub fn read(&self, path: &str) -> Result<Vec<u8>> {
+    pub fn read(&self, path: &str) -> Result<Vec<u8>, VfsError> {
         let full = self.root.join(path);
-        std::fs::read(&full).with_context(|| format!("read {}", full.display()))
+        std::fs::read(&full).map_err(|source| VfsError::Read { path: full, source })
     }
 
     /// Whole file as UTF-8 text. `path` is an asset path.
-    pub fn read_text(&self, path: &str) -> Result<String> {
+    pub fn read_text(&self, path: &str) -> Result<String, VfsError> {
         let full = self.root.join(path);
-        std::fs::read_to_string(&full).with_context(|| format!("read {}", full.display()))
+        std::fs::read_to_string(&full).map_err(|source| VfsError::Read { path: full, source })
     }
 
     /// OS path → asset path, e.g. "/…/assets/shaders/a.wgsl" → "shaders/a.wgsl".
@@ -98,8 +123,9 @@ mod tests {
     }
 
     #[test]
-    fn missing_root_is_an_error() {
-        assert!(Vfs::new("/definitely/not/here").is_err());
+    fn missing_root_is_a_root_error() {
+        let err = Vfs::new("/definitely/not/here").unwrap_err();
+        assert!(matches!(err, VfsError::Root { .. }));
     }
 
     #[test]
@@ -115,7 +141,12 @@ mod tests {
         let vfs = fixture("vfs-missing");
         let err = vfs.read_text("shaders/nope.wgsl").unwrap_err();
 
-        assert!(format!("{err:#}").contains("nope.wgsl"));
+        let VfsError::Read { path, source } = &err else {
+            panic!("wrong variant: {err:?}");
+        };
+        assert!(path.ends_with("shaders/nope.wgsl"));
+        assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        assert!(crate::chain(&err).to_string().contains("nope.wgsl"));
     }
 
     #[test]

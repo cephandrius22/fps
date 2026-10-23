@@ -5,6 +5,8 @@ members = ["crates/*", "game"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+# Internal crates; never published to crates.io.
+publish = false
 
 [workspace.dependencies]
 base = { path = "crates/base" }
@@ -20,10 +22,18 @@ log = "0.4.34"
 notify = "8.2.0"
 png = "0.18.1"
 pollster = "1.0.1"
+thiserror = "2.0.21"
 wgpu = "30.0.1"
 winit = "0.30.13"
 
+# Lints for every crate; each opts in with `[lints] workspace = true`.
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
 # Optimize dependencies in debug builds; keeps wgpu/naga fast while our
-# own code stays debuggable.
+# own code stays debuggable. Line tables only for dependencies: backtraces
+# still name their files, and target/ shrinks by gigabytes.
 [profile.dev.package."*"]
 opt-level = 2
+debug = "line-tables-only"

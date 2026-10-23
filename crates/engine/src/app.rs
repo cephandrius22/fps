@@ -3,24 +3,24 @@
 //!   hot reload ─► N fixed ticks (game.tick) ─► game.draw(alpha) ─► render
 //!   ─► debug captures (F12, $ENGINE_CAPTURE_FRAME)
 
-use anyhow::Result;
-use base::{Vfs, Watcher};
-use platform::{Event, FixedStep, Flow, Handler, Window, WindowConfig};
+use base::{BoxError, Vfs, Watcher};
+use platform::{Event, FixedStep, Flow, Handler, RunError, Window, WindowConfig};
 use render::Renderer;
 
 use crate::assets::{Asset, Registry, shader_path};
 use crate::debug::{self, Latch, SCREENSHOT_KEY};
+use crate::error::EngineError;
 use crate::gfx::{Frame, Gfx};
 use crate::input::Input;
 use crate::{Config, Game, sim};
 
-pub(crate) fn run(config: Config, game: impl Game) -> Result<()> {
+pub(crate) fn run(config: Config, game: impl Game) -> Result<(), EngineError> {
     let vfs = Vfs::discover()?;
     log::info!("assets: {}", vfs.root().display());
 
     // Hot reload is a convenience; run without it rather than fail.
     let watcher = Watcher::new(vfs.root())
-        .inspect_err(|err| log::warn!("hot reload disabled: {err:#}"))
+        .inspect_err(|err| log::warn!("hot reload disabled: {}", base::chain(err)))
         .ok();
 
     let window = WindowConfig {
@@ -39,7 +39,12 @@ pub(crate) fn run(config: Config, game: impl Game) -> Result<()> {
         running: None,
     };
 
-    platform::run(window, app)
+    // Init errors are already ours; only OS failures need wrapping.
+    match platform::run(window, app) {
+        Ok(()) => Ok(()),
+        Err(RunError::Init(err)) => Err(err),
+        Err(RunError::Platform(err)) => Err(EngineError::Window(err.into())),
+    }
 }
 
 struct App<G> {
@@ -77,31 +82,39 @@ impl<G: Game> App<G> {
                 continue;
             };
 
-            let result = match asset {
+            let result: Result<(), BoxError> = match asset {
                 Asset::Shader(shader) => self
                     .vfs
                     .read_text(&path)
-                    .and_then(|src| running.renderer.reload_shader(shader, &src)),
+                    .map_err(BoxError::from)
+                    .and_then(|src| Ok(running.renderer.reload_shader(shader, &src)?)),
             };
 
             match result {
                 Ok(()) => log::info!("reloaded {path}"),
-                Err(err) => log::error!("reload {path} failed, keeping old version: {err:#}"),
+                Err(err) => log::error!(
+                    "reload {path} failed, keeping old version: {}",
+                    base::chain(&*err)
+                ),
             }
         }
     }
 }
 
 impl<G: Game> Handler for App<G> {
-    fn init(&mut self, window: Window) -> Result<()> {
+    type Error = EngineError;
+
+    fn init(&mut self, window: Window) -> Result<(), EngineError> {
         let size = window.size();
         let vfs = &self.vfs;
         let source = |shader| vfs.read_text(shader_path(shader));
         let mut renderer = Renderer::new(window, size, self.config.video.to_render(), source)?;
 
-        self.game.init(&mut Gfx {
-            renderer: &mut renderer,
-        })?;
+        self.game
+            .init(&mut Gfx {
+                renderer: &mut renderer,
+            })
+            .map_err(EngineError::Game)?;
 
         // Clock starts after loading so load time is not simulated.
         self.running = Some(Running {

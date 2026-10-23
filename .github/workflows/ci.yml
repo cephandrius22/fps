@@ -17,9 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # Installs the version pinned in rust-toolchain.toml, with its
+      # components, so CI matches local builds exactly.
+      - run: rustup toolchain install
 
       # winit needs X11/Wayland headers on Linux. Mesa's lavapipe is a
       # software Vulkan driver, so headless GPU tests run there too.

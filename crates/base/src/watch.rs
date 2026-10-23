@@ -5,8 +5,12 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
-use anyhow::Result;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+
+/// The OS file watch could not be started.
+#[derive(Debug, thiserror::Error)]
+#[error("start file watcher")]
+pub struct WatchError(#[from] notify::Error);
 
 /// Recursive file watcher with a non-blocking, per-frame drain.
 pub struct Watcher {
@@ -17,7 +21,7 @@ pub struct Watcher {
 
 impl Watcher {
     /// Starts watching `dir` and everything below it.
-    pub fn new(dir: &Path) -> Result<Self> {
+    pub fn new(dir: &Path) -> Result<Self, WatchError> {
         let (tx, rx) = channel();
 
         let mut inner = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -78,6 +82,11 @@ mod tests {
         }
 
         assert!(seen, "no event for {}", file.display());
+    }
+
+    #[test]
+    fn missing_dir_is_an_error() {
+        assert!(Watcher::new(Path::new("/definitely/not/here")).is_err());
     }
 
     #[test]

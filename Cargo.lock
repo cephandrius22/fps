@@ -185,11 +185,11 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 name = "base"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "env_logger",
  "log",
  "notify",
  "png",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -503,12 +503,12 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 name = "engine"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "base",
  "glam",
  "log",
  "platform",
  "render",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1600,10 +1600,10 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "platform"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "base",
  "log",
  "raw-window-handle",
+ "thiserror 2.0.21",
  "winit",
 ]
 
@@ -1799,7 +1799,6 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "render"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "base",
  "bytemuck",
  "glam",
@@ -1807,6 +1806,7 @@ dependencies = [
  "naga",
  "pollster",
  "raw-window-handle",
+ "thiserror 2.0.21",
  "wgpu",
 ]
 

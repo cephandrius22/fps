@@ -3,11 +3,15 @@ name = "engine"
 description = "Engine core: main loop and the API the game layer uses."
 version.workspace = true
 edition.workspace = true
+publish.workspace = true
 
 [dependencies]
-anyhow.workspace = true
 base.workspace = true
 glam.workspace = true
 log.workspace = true
 platform.workspace = true
 render.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

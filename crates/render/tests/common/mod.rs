@@ -4,7 +4,6 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
 use render::{MeshData, RenderConfig, Renderer, Shader, Vertex};
 
 /// Set to make a missing GPU fail tests instead of skipping them.
@@ -24,10 +23,8 @@ pub fn shader_file(shader: Shader) -> &'static str {
     }
 }
 
-pub fn load_shader(shader: Shader) -> Result<String> {
-    Ok(std::fs::read_to_string(
-        shader_dir().join(shader_file(shader)),
-    )?)
+pub fn load_shader(shader: Shader) -> std::io::Result<String> {
+    std::fs::read_to_string(shader_dir().join(shader_file(shader)))
 }
 
 /// Headless renderer, or None (test skips) on machines without a GPU.
@@ -41,10 +38,10 @@ pub fn renderer() -> Option<Renderer> {
     match Renderer::headless(config, load_shader) {
         Ok(renderer) => Some(renderer),
         Err(err) if std::env::var_os(REQUIRE_GPU_ENV).is_none() => {
-            eprintln!("skipping GPU test: {err:#}");
+            eprintln!("skipping GPU test: {}", base::chain(&err));
             None
         }
-        Err(err) => panic!("{REQUIRE_GPU_ENV} set but no GPU: {err:#}"),
+        Err(err) => panic!("{REQUIRE_GPU_ENV} set but no GPU: {}", base::chain(&err)),
     }
 }
 

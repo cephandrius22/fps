@@ -1,0 +1,6 @@
+# Pinned so local builds and CI run the same compiler and clippy; new
+# clippy lints otherwise break `-D warnings` without a code change.
+# Bump deliberately: edit, run `cargo clippy --all-targets`, commit.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]

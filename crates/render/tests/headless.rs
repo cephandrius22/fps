@@ -5,7 +5,9 @@ mod common;
 
 use common::{HEIGHT, WIDTH, quad, renderer};
 use glam::{Mat4, Vec3};
-use render::{Camera, Capture, Draw, FrameView, MeshId, Renderer, Shader};
+use render::{
+    Camera, Capture, Draw, FrameView, MeshId, RenderConfig, RenderError, Renderer, Shader,
+};
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
@@ -101,7 +103,10 @@ fn bad_shader_reload_keeps_old_pipeline() {
     };
     let mesh = r.create_mesh(&quad(RED));
 
-    assert!(r.reload_shader(Shader::Mesh, "this is not wgsl").is_err());
+    let err = r
+        .reload_shader(Shader::Mesh, "this is not wgsl")
+        .unwrap_err();
+    assert!(matches!(err, RenderError::Validation { .. }), "{err:?}");
 
     let shot = draw(&mut r, &[at(mesh, Mat4::IDENTITY)]);
     assert!(is_red(shot.pixel(CENTER.0, CENTER.1).unwrap()));
@@ -138,4 +143,25 @@ fn destroy_mesh_invalidates_handle_once() {
     // Slot reuse must not resurrect the old handle.
     let reused = r.create_mesh(&quad(GREEN));
     assert_ne!(mesh, reused);
+}
+
+#[test]
+fn failed_shader_load_names_the_shader() {
+    let missing = |_| Err::<String, _>(std::io::Error::other("gone"));
+    let err = match Renderer::headless(RenderConfig::default(), missing) {
+        Ok(_) => panic!("renderer built without shader source"),
+        Err(RenderError::NoAdapter(_)) => return, // no GPU: skip
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(
+            err,
+            RenderError::ShaderSource {
+                shader: Shader::Mesh,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
 }

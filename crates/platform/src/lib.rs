@@ -2,8 +2,6 @@
 //! this crate sees the windowing library. Reports what happened
 //! (events); deciding what it means (input state) is the engine's job.
 
-#![warn(missing_docs)]
-
 mod clock;
 mod event;
 mod run;
@@ -11,5 +9,5 @@ mod window;
 
 pub use clock::FixedStep;
 pub use event::{Event, KeyState};
-pub use run::{Flow, Handler, WindowConfig, run};
+pub use run::{Flow, Handler, PlatformError, RunError, WindowConfig, run};
 pub use window::Window;

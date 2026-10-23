@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use crate::error::Result;
 
 pub(crate) struct Gpu {
     pub adapter: wgpu::Adapter,
@@ -18,8 +18,7 @@ impl Gpu {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: surface,
             ..Default::default()
-        }))
-        .context("no compatible GPU adapter")?;
+        }))?;
 
         let info = adapter.get_info();
         log::info!("GPU: {} ({:?})", info.name, info.backend);

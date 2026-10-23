@@ -3,7 +3,7 @@
 //! Per-draw model matrices live in one storage buffer; draw `i` reads
 //! entry `i` via `instance_index`, so there is one upload per frame.
 
-use anyhow::Result;
+use crate::error::Result;
 use glam::Mat4;
 
 use crate::Draw;

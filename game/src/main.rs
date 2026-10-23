@@ -3,9 +3,8 @@
 
 mod cube;
 
-use anyhow::Result;
 use engine::math::{Mat4, Quat, Vec3};
-use engine::{Camera, Config, Frame, Game, Gfx, Key, MeshHandle, Tick};
+use engine::{BoxError, Camera, Config, Frame, Game, Gfx, Key, MeshHandle, Tick};
 
 /// Radians per second.
 const SPIN_SPEED: f32 = 1.2;
@@ -24,7 +23,7 @@ struct Sandbox {
 }
 
 impl Game for Sandbox {
-    fn init(&mut self, gfx: &mut Gfx) -> Result<()> {
+    fn init(&mut self, gfx: &mut Gfx) -> Result<(), BoxError> {
         self.cube = Some(gfx.create_mesh(&cube::mesh()));
         Ok(())
     }
@@ -51,11 +50,13 @@ impl Game for Sandbox {
     }
 }
 
-fn main() -> Result<()> {
+// anyhow at the top: the binary only reports errors, it never matches them.
+fn main() -> anyhow::Result<()> {
     let config = Config {
         title: "Retro FPS — sandbox".into(),
         ..Default::default()
     };
 
-    engine::run(config, Sandbox::default())
+    engine::run(config, Sandbox::default())?;
+    Ok(())
 }

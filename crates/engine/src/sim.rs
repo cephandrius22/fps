@@ -45,8 +45,7 @@ pub(crate) fn run_ticks(game: &mut impl Game, input: &mut Input, ticks: u32, dt:
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use base::Key;
+    use base::{BoxError, Key};
     use platform::{Event, KeyState};
 
     use super::*;
@@ -61,7 +60,7 @@ mod tests {
     }
 
     impl Game for Recorder {
-        fn init(&mut self, _: &mut Gfx) -> Result<()> {
+        fn init(&mut self, _: &mut Gfx) -> Result<(), BoxError> {
             Ok(())
         }
 

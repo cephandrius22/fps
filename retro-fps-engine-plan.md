@@ -13,7 +13,7 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 | Phase | Goal | Status |
 |---|---|---|
 | 0 — Foundations | Window, loop, GPU, low-res cube | ✅ Done (CI unverified) |
-| 0.5 — Follow-ups | Code-health items found in review | ⏳ Next |
+| 0.5 — Follow-ups | Code-health items found in review | 🟡 Code done; CI still unverified |
 | 1 — First world | Fly through a lit, fogged BSP level | Not started |
 | 2 — Walking around | Collision, character controller, entities, Lua | Not started |
 | 3 — Own toolchain | `mapc`, lightmap baker, glTF props | Not started |
@@ -35,8 +35,10 @@ Section 11 has the detail for each phase.
 | Resources | Asset filesystem (`assets/` discovery), meshes addressed by generational handles | `crates/base`, `crates/render` |
 | Hot reload | File watcher plus an asset registry. Only shaders reload so far; a bad shader is rejected and the old one stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
 | Debugging | Logging (`RUST_LOG`), `verify!` asserts, F12 screenshot, `ENGINE_CAPTURE_FRAME=N` capture-and-exit | `crates/base`, `crates/engine/src/debug.rs` |
-| Tests | 67 tests: unit tests per crate, headless GPU pixel tests, naga shader validation | `cargo test` |
-| CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows; Linux runs GPU tests on Mesa lavapipe | `.github/workflows/ci.yml` (never run) |
+| Errors | Typed `thiserror` errors per area; `EngineError` categories for games; `base::chain` for logs | `crates/*/src/error.rs` and per module |
+| Tests | 80 tests: unit tests per crate, headless GPU pixel tests, naga shader validation | `cargo test` |
+| CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows with the pinned toolchain; Linux runs GPU tests on Mesa lavapipe | `.github/workflows/ci.yml` (never run) |
+| Build config | Toolchain pinned to 1.99.1, lints in `[workspace.lints]`, `publish = false`, dependency debug info reduced to line tables | `rust-toolchain.toml`, `Cargo.toml` |
 
 Not implemented yet, though the plan's sections describe them: textures, maps, lightmaps, fog, the palette post-pass, collision, entities, scripting, audio.
 
@@ -267,13 +269,13 @@ Each phase ends with something runnable.
 - ✅ **Milestone:** a spinning colored cube at low resolution with nearest-neighbor upscale. Verified with a captured frame on Apple M1 (Metal).
 - Beyond scope, also done: screenshot capture, a headless renderer with pixel-checking GPU tests, generational mesh handles, enforced layer boundaries, README.
 
-### Phase 0.5 — Follow-ups (days) — next
+### Phase 0.5 — Follow-ups (days) — code done, CI pending
 Found in review. Each is cheaper now than once Phase 1 builds on top of it.
-- Push to GitHub and get CI green on Linux and Windows. Confirm the lavapipe GPU tests run on Linux.
-- Typed errors (`thiserror`) in the library crates, so callers can tell "no GPU" from "bad shader". `anyhow` stays in `game`.
-- Move lint settings into a root `[workspace.lints]` table instead of per-crate attributes.
-- `publish = false` on internal crates.
-- Pin the toolchain with `rust-toolchain.toml`, so local and CI clippy agree.
+- ⏳ Push to GitHub and get CI green on Linux and Windows. Confirm the lavapipe GPU tests run on Linux.
+- ✅ Typed errors (`thiserror`) in the library crates, so callers can tell "no GPU" from "bad shader". `anyhow` stays in `game`.
+- ✅ Lint settings in a root `[workspace.lints]` table instead of per-crate attributes. `unsafe_code` is forbidden there too.
+- ✅ `publish = false` on internal crates.
+- ✅ Toolchain pinned with `rust-toolchain.toml`, so local and CI clippy agree.
 - Optional: prefix crate names (e.g. `retro-render`) and switch `passes/mod.rs` to `passes.rs`.
 - **Milestone:** CI green on all three OSes.
 

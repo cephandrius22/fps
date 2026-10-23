@@ -3,7 +3,7 @@
 //!
 //!   color texture ─copy─► staging buffer (rows padded to 256 B) ─map─► RGBA
 
-use anyhow::{Context, Result};
+use crate::error::{RenderError, Result};
 
 use crate::target::LowRes;
 
@@ -68,7 +68,7 @@ pub(crate) fn read(device: &wgpu::Device, queue: &wgpu::Queue, target: &LowRes) 
         submission_index: None,
         timeout: None,
     })?;
-    rx.recv().context("map callback dropped")??;
+    rx.recv().map_err(|_| RenderError::MapDropped)??;
 
     let mapped = staging.slice(..).get_mapped_range()?;
     let rgba = strip_padding(&mapped, row_bytes as usize, padded_row as usize);
