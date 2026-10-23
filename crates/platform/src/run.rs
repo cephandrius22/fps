@@ -1,8 +1,7 @@
-//! OS event loop. Collects input, forwards resize, and asks the handler
-//! for a frame on every redraw.
+//! OS event loop. Translates OS events for the handler and asks it for
+//! a frame on every redraw.
 //!
-//!   OS events ─► Runner ─► Input ─┐
-//!                  │              ▼
+//!   OS events ─► Runner ─► Handler::event(Event)
 //!                  └─ redraw ─► Handler::frame ─► Flow
 
 use std::sync::Arc;
@@ -10,32 +9,41 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::WindowId;
 
-use crate::input::{Button, Input, KeyState, map_key};
+use crate::event::{Event, key_state, map_button, map_key};
 use crate::window::Window;
 
+/// Initial window settings.
 pub struct WindowConfig {
+    /// Title bar text.
     pub title: String,
-    /// Logical (DPI-independent) size.
+    /// Logical (DPI-independent) width.
     pub width: u32,
+    /// Logical (DPI-independent) height.
     pub height: u32,
 }
 
+/// What the event loop should do after a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flow {
+    /// Keep running.
     Continue,
+    /// Close the window and return from [`run`].
     Exit,
 }
 
 /// Implemented by the layer above (the engine).
 pub trait Handler {
+    /// Window is ready. An error aborts [`run`] and is returned from it.
     fn init(&mut self, window: Window) -> Result<()>;
-    fn resized(&mut self, width: u32, height: u32);
-    fn frame(&mut self, input: &mut Input) -> Flow;
+    /// An OS event arrived. Called between frames.
+    fn event(&mut self, event: Event);
+    /// Produce one frame.
+    fn frame(&mut self) -> Flow;
 }
 
 /// Blocks until the window closes or the handler returns `Flow::Exit`.
@@ -45,7 +53,6 @@ pub fn run(config: WindowConfig, handler: impl Handler) -> Result<()> {
         config,
         handler,
         window: None,
-        input: Input::default(),
         error: None,
     };
 
@@ -61,7 +68,6 @@ struct Runner<H> {
     config: WindowConfig,
     handler: H,
     window: Option<Arc<winit::window::Window>>,
-    input: Input,
     error: Option<anyhow::Error>,
 }
 
@@ -100,51 +106,53 @@ impl<H: Handler> ApplicationHandler for Runner<H> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-
-            WindowEvent::Resized(size) => self.handler.resized(size.width, size.height),
-
-            WindowEvent::Focused(false) => self.input.release_all(),
-
-            WindowEvent::KeyboardInput { event, .. } => {
-                let PhysicalKey::Code(code) = event.physical_key else {
-                    return;
-                };
-                let Some(key) = map_key(code) else {
-                    return;
-                };
-
-                self.input.set_key(key, key_state(event.state));
-            }
-
-            WindowEvent::MouseInput { state, button, .. } => {
-                let Some(button) = map_button(button) else {
-                    return;
-                };
-
-                self.input.set_button(button, key_state(state));
+        let translated = match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+                return;
             }
 
             WindowEvent::RedrawRequested => {
-                let Some(window) = self.window.clone() else {
-                    return;
-                };
-
-                match self.handler.frame(&mut self.input) {
-                    Flow::Continue => window.request_redraw(),
-                    Flow::Exit => event_loop.exit(),
-                }
+                self.redraw(event_loop);
+                return;
             }
 
-            _ => {}
+            WindowEvent::Resized(size) => Some(Event::Resized {
+                width: size.width,
+                height: size.height,
+            }),
+
+            WindowEvent::Focused(false) => Some(Event::FocusLost),
+
+            WindowEvent::KeyboardInput { event, .. } => match event.physical_key {
+                PhysicalKey::Code(code) => map_key(code).map(|key| Event::Key {
+                    key,
+                    state: key_state(event.state),
+                }),
+                PhysicalKey::Unidentified(_) => None,
+            },
+
+            WindowEvent::MouseInput { state, button, .. } => {
+                map_button(button).map(|button| Event::Button {
+                    button,
+                    state: key_state(state),
+                })
+            }
+
+            _ => None,
+        };
+
+        if let Some(event) = translated {
+            self.handler.event(event);
         }
     }
 
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
-        // Raw motion: unaffected by cursor acceleration or screen edges.
         if let DeviceEvent::MouseMotion { delta } = event {
-            self.input.add_mouse_delta(delta.0 as f32, delta.1 as f32);
+            self.handler.event(Event::MouseMotion {
+                dx: delta.0 as f32,
+                dy: delta.1 as f32,
+            });
         }
     }
 
@@ -155,18 +163,15 @@ impl<H: Handler> ApplicationHandler for Runner<H> {
     }
 }
 
-fn key_state(state: ElementState) -> KeyState {
-    match state {
-        ElementState::Pressed => KeyState::Pressed,
-        ElementState::Released => KeyState::Released,
-    }
-}
+impl<H: Handler> Runner<H> {
+    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
 
-fn map_button(button: MouseButton) -> Option<Button> {
-    match button {
-        MouseButton::Left => Some(Button::Left),
-        MouseButton::Right => Some(Button::Right),
-        MouseButton::Middle => Some(Button::Middle),
-        _ => None,
+        match self.handler.frame() {
+            Flow::Continue => window.request_redraw(),
+            Flow::Exit => event_loop.exit(),
+        }
     }
 }

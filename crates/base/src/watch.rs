@@ -8,6 +8,7 @@ use std::sync::mpsc::{Receiver, channel};
 use anyhow::Result;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
+/// Recursive file watcher with a non-blocking, per-frame drain.
 pub struct Watcher {
     // Kept alive: dropping it stops the OS watch.
     _inner: RecommendedWatcher,
@@ -15,6 +16,7 @@ pub struct Watcher {
 }
 
 impl Watcher {
+    /// Starts watching `dir` and everything below it.
     pub fn new(dir: &Path) -> Result<Self> {
         let (tx, rx) = channel();
 
@@ -37,9 +39,52 @@ impl Watcher {
         Ok(Self { _inner: inner, rx })
     }
 
-    /// Changed files since the last call, deduplicated.
+    /// Changed files since the last call, deduplicated. Never blocks.
     pub fn drain(&self) -> Vec<PathBuf> {
         let unique: BTreeSet<_> = self.rx.try_iter().collect();
         unique.into_iter().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// OS watchers deliver asynchronously (FSEvents batches up to ~1 s).
+    const DEADLINE: Duration = Duration::from_secs(10);
+    const POLL: Duration = Duration::from_millis(50);
+
+    #[test]
+    fn reports_written_file() {
+        let dir = crate::test_dir("watch");
+        let watcher = Watcher::new(&dir).unwrap();
+        let file = dir.join("shader.wgsl");
+
+        let start = Instant::now();
+        let mut seen = false;
+
+        // Rewrite until seen: an event can be lost if the OS watch is
+        // still starting when the first write lands.
+        while !seen && start.elapsed() < DEADLINE {
+            std::fs::write(&file, "// edit").unwrap();
+            std::thread::sleep(POLL);
+
+            seen = watcher
+                .drain()
+                .iter()
+                .any(|path| path.file_name() == file.file_name());
+        }
+
+        assert!(seen, "no event for {}", file.display());
+    }
+
+    #[test]
+    fn drain_is_empty_without_changes() {
+        let dir = crate::test_dir("watch-quiet");
+        let watcher = Watcher::new(&dir).unwrap();
+
+        assert!(watcher.drain().is_empty());
     }
 }

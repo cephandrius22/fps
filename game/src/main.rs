@@ -5,15 +5,19 @@ mod cube;
 
 use anyhow::Result;
 use engine::math::{Mat4, Quat, Vec3};
-use engine::{Camera, Config, Frame, Game, Gfx, Key, MeshId, Tick};
+use engine::{Camera, Config, Frame, Game, Gfx, Key, MeshHandle, Tick};
 
 /// Radians per second.
 const SPIN_SPEED: f32 = 1.2;
 const FOV_DEG: f32 = 70.0;
+/// Slightly above and in front, looking at the origin.
+const EYE: Vec3 = Vec3::new(0.0, 1.2, 3.0);
+/// Tilted so three faces show at once. Normalized at use.
+const SPIN_AXIS: Vec3 = Vec3::new(0.3, 1.0, 0.2);
 
 #[derive(Default)]
 struct Sandbox {
-    cube: Option<MeshId>,
+    cube: Option<MeshHandle>,
     /// Spin angle at the previous and current tick, for interpolation.
     prev_angle: f32,
     angle: f32,
@@ -39,13 +43,11 @@ impl Game for Sandbox {
             return;
         };
 
-        let eye = Vec3::new(0.0, 1.2, 3.0);
-        frame.camera = Camera::look_at(eye, Vec3::ZERO, FOV_DEG.to_radians());
+        frame.camera = Camera::look_at(EYE, Vec3::ZERO, FOV_DEG.to_radians());
 
-        // Tilted axis so three faces show at once.
         let angle = self.prev_angle + (self.angle - self.prev_angle) * frame.alpha;
-        let axis = Vec3::new(0.3, 1.0, 0.2).normalize();
-        frame.draw_mesh(cube, Mat4::from_quat(Quat::from_axis_angle(axis, angle)));
+        let spin = Quat::from_axis_angle(SPIN_AXIS.normalize(), angle);
+        frame.draw_mesh(cube, Mat4::from_quat(spin));
     }
 }
 

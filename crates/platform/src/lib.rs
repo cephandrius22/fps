@@ -1,12 +1,15 @@
-//! OS layer. Hides winit behind engine-owned types so the rest of the
-//! engine never sees the windowing library.
+//! OS layer. Hides winit behind engine-owned types so nothing above
+//! this crate sees the windowing library. Reports what happened
+//! (events); deciding what it means (input state) is the engine's job.
+
+#![warn(missing_docs)]
 
 mod clock;
-mod input;
+mod event;
 mod run;
 mod window;
 
 pub use clock::FixedStep;
-pub use input::{Button, Input, Key};
+pub use event::{Event, KeyState};
 pub use run::{Flow, Handler, WindowConfig, run};
 pub use window::Window;

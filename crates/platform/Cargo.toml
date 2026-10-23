@@ -1,11 +1,12 @@
 [package]
 name = "platform"
-description = "OS layer: window, input, fixed-timestep clock."
+description = "OS layer: window, OS events, fixed-timestep clock."
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base.workspace = true
 log.workspace = true
 raw-window-handle = "0.6.2"
 winit.workspace = true

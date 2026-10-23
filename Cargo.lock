@@ -1601,6 +1601,7 @@ name = "platform"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base",
  "log",
  "raw-window-handle",
  "winit",
@@ -1803,8 +1804,9 @@ dependencies = [
  "bytemuck",
  "glam",
  "log",
- "platform",
+ "naga",
  "pollster",
+ "raw-window-handle",
  "wgpu",
 ]
 

@@ -10,6 +10,10 @@ base.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 log.workspace = true
-platform.workspace = true
 pollster.workspace = true
+raw-window-handle = "0.6.2"
 wgpu.workspace = true
+
+[dev-dependencies]
+# Same version wgpu uses, so validation matches what runs on the GPU.
+naga = { version = "30.0.1", features = ["wgsl-in"] }

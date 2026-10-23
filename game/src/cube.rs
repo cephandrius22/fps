@@ -42,3 +42,52 @@ pub fn mesh() -> MeshData {
 
     data
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EPS: f32 = 1e-5;
+
+    #[test]
+    fn has_four_vertices_and_two_triangles_per_face() {
+        let cube = mesh();
+
+        assert_eq!(cube.vertices.len(), 6 * 4);
+        assert_eq!(cube.indices.len(), 6 * 6);
+        assert!(
+            cube.indices
+                .iter()
+                .all(|&i| (i as usize) < cube.vertices.len())
+        );
+    }
+
+    #[test]
+    fn unit_cube_centered_on_origin() {
+        for v in mesh().vertices {
+            assert!(
+                v.pos.iter().all(|c| (c.abs() - HALF).abs() < EPS),
+                "{:?}",
+                v.pos
+            );
+        }
+    }
+
+    /// Back-face culling hides anything wound the wrong way, so every
+    /// triangle must wind counter-clockwise around its outward normal.
+    #[test]
+    fn triangles_face_outward() {
+        let cube = mesh();
+        let pos = |i: u32| Vec3::from(cube.vertices[i as usize].pos);
+
+        for tri in cube.indices.as_chunks::<3>().0 {
+            let [a, b, c] = tri.map(pos);
+            let winding_normal = (b - a).cross(c - a).normalize();
+            let normal = Vec3::from(cube.vertices[tri[0] as usize].normal);
+            let centroid = (a + b + c) / 3.0;
+
+            assert!((winding_normal - normal).length() < EPS, "tri {tri:?}");
+            assert!(centroid.dot(normal) > 0.0, "tri {tri:?} points inward");
+        }
+    }
+}

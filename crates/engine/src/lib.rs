@@ -1,27 +1,40 @@
-//! Engine core: owns the main loop and exposes the API the game layer
-//! is written against. The game never touches platform or GPU types.
+//! Engine core: owns the main loop and defines the API the game layer
+//! is written against. Every public type here is the engine's own;
+//! platform and render types stay behind this crate.
 //!
-//!   game ──► engine ──► render ──► wgpu
-//!               └─────► platform ──► winit
+//!   game ──► engine ──┬──► render ───► wgpu
+//!                     └──► platform ─► winit
+//!   (base: foundation utilities, usable by all)
+
+#![warn(missing_docs)]
 
 mod app;
-mod context;
+mod assets;
+mod debug;
+mod gfx;
+mod input;
+mod sim;
 
 use anyhow::Result;
 
-pub use context::{Frame, Gfx, Tick};
+pub use base::{Button, Key};
+pub use gfx::{Camera, Frame, Gfx, MeshData, MeshHandle, Scaling, VSync, Vertex, Video};
 pub use glam as math;
-pub use platform::{Button, Input, Key};
-pub use render::{Camera, MeshData, MeshId, RenderConfig, Scaling, VSync, Vertex};
+pub use input::Input;
+pub use sim::Tick;
 
+/// Engine startup settings.
 pub struct Config {
+    /// Window title.
     pub title: String,
-    /// Window size in logical pixels.
+    /// Window width in logical pixels.
     pub width: u32,
+    /// Window height in logical pixels.
     pub height: u32,
     /// Simulation rate. Rendering runs as fast as vsync allows.
     pub tick_hz: u32,
-    pub render: RenderConfig,
+    /// Resolution and presentation.
+    pub video: Video,
 }
 
 impl Default for Config {
@@ -31,7 +44,7 @@ impl Default for Config {
             width: 1280,
             height: 720,
             tick_hz: 60,
-            render: RenderConfig::default(),
+            video: Video::default(),
         }
     }
 }
@@ -39,8 +52,11 @@ impl Default for Config {
 /// The game layer. `tick` advances simulation by a fixed `dt`; `draw`
 /// describes the scene, interpolating with `frame.alpha`.
 pub trait Game {
+    /// Called once, after the window and GPU are up. Load resources here.
     fn init(&mut self, gfx: &mut Gfx) -> Result<()>;
+    /// One fixed simulation step. Read input, update state.
     fn tick(&mut self, tick: &mut Tick);
+    /// Describe the frame: set the camera, queue draws. No simulation.
     fn draw(&mut self, frame: &mut Frame);
 }
 

@@ -34,6 +34,8 @@ pub(crate) struct MeshPass {
     model_buf: wgpu::Buffer,
     capacity: usize,
     bind_group: wgpu::BindGroup,
+    /// Reused each frame to avoid a per-frame allocation.
+    models: Vec<Mat4>,
 }
 
 impl MeshPass {
@@ -69,6 +71,7 @@ impl MeshPass {
             model_buf,
             capacity: INITIAL_CAPACITY,
             bind_group,
+            models: Vec::with_capacity(INITIAL_CAPACITY),
         })
     }
 
@@ -95,8 +98,9 @@ impl MeshPass {
         let frame = FrameUniforms { view_proj };
         queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&frame));
 
-        let models: Vec<Mat4> = draws.iter().map(|draw| draw.model).collect();
-        queue.write_buffer(&self.model_buf, 0, bytemuck::cast_slice(&models));
+        self.models.clear();
+        self.models.extend(draws.iter().map(|draw| draw.model));
+        queue.write_buffer(&self.model_buf, 0, bytemuck::cast_slice(&self.models));
     }
 
     pub fn record(
@@ -132,8 +136,10 @@ impl MeshPass {
         pass.set_bind_group(0, &self.bind_group, &[]);
 
         for (i, draw) in draws.iter().enumerate() {
-            let Some(mesh) = meshes.get(draw.mesh) else {
-                base::verify!(false, "unknown mesh {:?}", draw.mesh);
+            // A destroyed mesh is a caller bug: flag it, skip the draw.
+            let mesh = meshes.get(draw.mesh);
+            base::verify!(mesh.is_some(), "draw uses destroyed mesh {:?}", draw.mesh);
+            let Some(mesh) = mesh else {
                 continue;
             };
 
@@ -228,4 +234,16 @@ fn create_bind_group(
             },
         ],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WGSL `mat4x4<f32>` is 64 bytes; uniform structs must match exactly.
+    #[test]
+    fn frame_uniforms_match_wgsl_layout() {
+        assert_eq!(size_of::<FrameUniforms>(), 64);
+        assert_eq!(size_of::<Mat4>(), 64);
+    }
 }

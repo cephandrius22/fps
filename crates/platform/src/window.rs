@@ -1,5 +1,5 @@
-//! Shareable window handle. Exposes only what the renderer needs to make
-//! a GPU surface, plus size.
+//! Shareable window handle. Exposes only what a GPU surface needs (raw
+//! handles) plus size.
 
 use std::sync::Arc;
 
@@ -7,6 +7,7 @@ use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
 
+/// Cheap-to-clone handle to the game window.
 #[derive(Clone, Debug)]
 pub struct Window(pub(crate) Arc<winit::window::Window>);
 

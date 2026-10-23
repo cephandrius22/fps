@@ -1,10 +1,18 @@
-//! Foundation layer shared by every other crate.
+//! Foundation layer: small, dependency-light utilities and vocabulary
+//! types usable by every other crate, like an extension of `std`.
+//! Nothing here knows about windows, GPUs, or game rules.
+
+#![warn(missing_docs)]
 
 pub mod image;
+pub mod keys;
 pub mod log;
+pub mod slots;
 pub mod vfs;
 pub mod watch;
 
+pub use keys::{Button, Key};
+pub use slots::{SlotId, Slots};
 pub use vfs::Vfs;
 pub use watch::Watcher;
 
@@ -31,4 +39,31 @@ macro_rules! verify {
             }
         }
     };
+}
+
+/// Fresh, empty scratch directory for tests that touch the filesystem.
+#[cfg(test)]
+pub(crate) fn test_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir()
+        .join("engine-base-tests")
+        .join(format!("{name}-{}", std::process::id()));
+
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn verify_passes_when_true() {
+        verify!(1 + 1 == 2, "math broke");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "verify failed")]
+    fn verify_panics_in_debug_when_false() {
+        verify!(1 + 1 == 3, "expected");
+    }
 }
