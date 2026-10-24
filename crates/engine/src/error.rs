@@ -17,9 +17,20 @@ pub enum EngineError {
     /// No usable GPU. Usually fatal; worth a friendly message.
     #[error("no compatible GPU")]
     NoGpu(#[source] BoxError),
-    /// The renderer failed to start, e.g. a shipped shader is broken.
-    #[error("start renderer")]
+    /// The renderer failed: at startup (e.g. a broken shipped shader) or
+    /// while creating a resource.
+    #[error("renderer")]
     Renderer(#[source] BoxError),
+    /// An asset file could not be loaded (missing, undecodable, or
+    /// rejected by the GPU).
+    #[error("load {path}")]
+    Load {
+        /// Asset path, e.g. "textures/crate.png".
+        path: String,
+        /// What went wrong.
+        #[source]
+        source: BoxError,
+    },
     /// The game's own `init` failed.
     #[error("game init failed")]
     Game(#[source] BoxError),
@@ -53,7 +64,7 @@ mod tests {
         // Cause survives the conversion.
         assert_eq!(
             base::chain(&surface).to_string(),
-            "start renderer: surface unsupported by adapter"
+            "renderer: surface unsupported by adapter"
         );
     }
 
@@ -63,6 +74,19 @@ mod tests {
         assert_eq!(
             base::chain(&err).to_string(),
             "game init failed: level missing"
+        );
+    }
+
+    #[test]
+    fn load_error_names_the_asset() {
+        let err = EngineError::Load {
+            path: "textures/crate.png".into(),
+            source: "file missing".into(),
+        };
+
+        assert_eq!(
+            base::chain(&err).to_string(),
+            "load textures/crate.png: file missing"
         );
     }
 }

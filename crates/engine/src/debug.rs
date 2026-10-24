@@ -50,7 +50,7 @@ pub(crate) fn save_screenshot(renderer: &Renderer, name: &str) {
         }
     };
 
-    match base::image::write_png(&path, shot.width, shot.height, &shot.rgba) {
+    match base::image::write_png(&path, &shot) {
         Ok(()) => log::info!("screenshot: {}", path.display()),
         Err(err) => log::error!("screenshot save failed: {}", base::chain(&err)),
     }

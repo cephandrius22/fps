@@ -2,6 +2,9 @@
 //!
 //! Per-draw model matrices live in one storage buffer; draw `i` reads
 //! entry `i` via `instance_index`, so there is one upload per frame.
+//!
+//!   group 0: frame uniforms + model matrices (once per pass)
+//!   group 1: texture + sampler (only when the texture changes)
 
 use crate::error::Result;
 use glam::Mat4;
@@ -10,6 +13,7 @@ use crate::Draw;
 use crate::mesh::{MeshStore, Vertex};
 use crate::shader::{checked, compile};
 use crate::target::{COLOR_FORMAT, DEPTH_FORMAT, LowRes};
+use crate::texture::TextureStore;
 
 const INITIAL_CAPACITY: usize = 256;
 const CLEAR: wgpu::Color = wgpu::Color {
@@ -39,7 +43,12 @@ pub(crate) struct MeshPass {
 }
 
 impl MeshPass {
-    pub fn new(device: &wgpu::Device, source: &str) -> Result<Self> {
+    /// `texture_layout` is group 1; see [`TextureStore::layout`].
+    pub fn new(
+        device: &wgpu::Device,
+        texture_layout: &wgpu::BindGroupLayout,
+        source: &str,
+    ) -> Result<Self> {
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh-bind-layout"),
             entries: &[
@@ -49,7 +58,7 @@ impl MeshPass {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mesh-pipeline-layout"),
-            bind_group_layouts: &[Some(&bind_layout)],
+            bind_group_layouts: &[Some(&bind_layout), Some(texture_layout)],
             immediate_size: 0,
         });
         let pipeline = build_pipeline(device, &pipeline_layout, source)?;
@@ -108,6 +117,7 @@ impl MeshPass {
         encoder: &mut wgpu::CommandEncoder,
         target: &LowRes,
         meshes: &MeshStore,
+        textures: &TextureStore,
         draws: &[Draw],
     ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -135,6 +145,9 @@ impl MeshPass {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
 
+        // None = nothing bound yet; Some(None) = the white fallback.
+        let mut bound_texture = None;
+
         for (i, draw) in draws.iter().enumerate() {
             // A destroyed mesh is a caller bug: flag it, skip the draw.
             let mesh = meshes.get(draw.mesh);
@@ -142,6 +155,11 @@ impl MeshPass {
             let Some(mesh) = mesh else {
                 continue;
             };
+
+            if bound_texture != Some(draw.texture) {
+                pass.set_bind_group(1, textures.bind_group(draw.texture), &[]);
+                bound_texture = Some(draw.texture);
+            }
 
             let instance = i as u32;
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));

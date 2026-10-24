@@ -3,15 +3,15 @@
 //!   hot reload ─► N fixed ticks (game.tick) ─► game.draw(alpha) ─► render
 //!   ─► debug captures (F12, $ENGINE_CAPTURE_FRAME)
 
-use base::{BoxError, Vfs, Watcher};
+use base::{Vfs, Watcher};
 use platform::{Event, FixedStep, Flow, Handler, RunError, Window, WindowConfig};
 use render::Renderer;
 
-use crate::assets::{Asset, Registry, shader_path};
+use crate::assets::{self, Registry, shader_path};
 use crate::debug::{self, Latch, SCREENSHOT_KEY};
 use crate::error::EngineError;
 use crate::gfx::{Frame, Gfx};
-use crate::input::Input;
+use crate::input::{CursorMode, Input};
 use crate::{Config, Game, sim};
 
 pub(crate) fn run(config: Config, game: impl Game) -> Result<(), EngineError> {
@@ -35,6 +35,7 @@ pub(crate) fn run(config: Config, game: impl Game) -> Result<(), EngineError> {
         watcher,
         registry: Registry::with_shaders(),
         input: Input::default(),
+        cursor: CursorMode::Free,
         capture_frame: debug::capture_frame(),
         running: None,
     };
@@ -54,17 +55,37 @@ struct App<G> {
     watcher: Option<Watcher>,
     registry: Registry,
     input: Input,
+    /// What the game wants; `Running::applied_cursor` is what the window has.
+    cursor: CursorMode,
     capture_frame: Option<u64>,
     running: Option<Running>,
 }
 
 /// State that exists only once the window is up.
 struct Running {
+    window: Window,
+    applied_cursor: CursorMode,
     renderer: Renderer,
     clock: FixedStep,
     frame: Frame,
     frame_index: u64,
     screenshot: Latch,
+}
+
+impl Running {
+    /// Brings the window's cursor in line with `wanted`. On failure the
+    /// cursor stays free, and the game sees that next tick.
+    fn apply_cursor(&mut self, wanted: &mut CursorMode) {
+        if *wanted == self.applied_cursor {
+            return;
+        }
+
+        if let Err(err) = self.window.set_cursor(wanted.to_platform()) {
+            log::warn!("cursor {wanted:?} unavailable: {}", base::chain(&err));
+            *wanted = CursorMode::Free;
+        }
+        self.applied_cursor = *wanted;
+    }
 }
 
 impl<G: Game> App<G> {
@@ -82,15 +103,7 @@ impl<G: Game> App<G> {
                 continue;
             };
 
-            let result: Result<(), BoxError> = match asset {
-                Asset::Shader(shader) => self
-                    .vfs
-                    .read_text(&path)
-                    .map_err(BoxError::from)
-                    .and_then(|src| Ok(running.renderer.reload_shader(shader, &src)?)),
-            };
-
-            match result {
+            match assets::reload(&mut running.renderer, &self.vfs, &path, asset) {
                 Ok(()) => log::info!("reloaded {path}"),
                 Err(err) => log::error!(
                     "reload {path} failed, keeping old version: {}",
@@ -108,16 +121,21 @@ impl<G: Game> Handler for App<G> {
         let size = window.size();
         let vfs = &self.vfs;
         let source = |shader| vfs.read_text(shader_path(shader));
-        let mut renderer = Renderer::new(window, size, self.config.video.to_render(), source)?;
+        let config = self.config.video.to_render();
+        let mut renderer = Renderer::new(window.clone(), size, config, source)?;
 
         self.game
             .init(&mut Gfx {
                 renderer: &mut renderer,
+                vfs: &self.vfs,
+                registry: &mut self.registry,
             })
             .map_err(EngineError::Game)?;
 
         // Clock starts after loading so load time is not simulated.
         self.running = Some(Running {
+            window,
+            applied_cursor: CursorMode::Free,
             renderer,
             clock: FixedStep::new(self.config.tick_hz),
             frame: Frame::new(),
@@ -129,13 +147,21 @@ impl<G: Game> Handler for App<G> {
     }
 
     fn event(&mut self, event: Event) {
-        let Event::Resized { width, height } = event else {
-            self.input.apply(event);
-            return;
-        };
+        log::trace!("{event:?}");
 
-        if let Some(running) = &mut self.running {
-            running.renderer.resize(width, height);
+        match event {
+            Event::Resized { width, height } => {
+                if let Some(running) = &mut self.running {
+                    running.renderer.resize(width, height);
+                }
+            }
+            // The OS drops a grab on focus loss; mirror that so the game
+            // knows to ask again.
+            Event::FocusLost => {
+                self.cursor = CursorMode::Free;
+                self.input.apply(event);
+            }
+            _ => self.input.apply(event),
         }
     }
 
@@ -148,9 +174,11 @@ impl<G: Game> Handler for App<G> {
 
         let ticks = running.clock.advance();
         let dt = running.clock.dt();
-        if sim::run_ticks(&mut self.game, &mut self.input, ticks, dt) == Flow::Exit {
+        let flow = sim::run_ticks(&mut self.game, &mut self.input, &mut self.cursor, ticks, dt);
+        if flow == Flow::Exit {
             return Flow::Exit;
         }
+        running.apply_cursor(&mut self.cursor);
 
         running.frame.begin(running.clock.alpha());
         self.game.draw(&mut running.frame);

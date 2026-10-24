@@ -28,6 +28,9 @@ pub enum PlatformError {
     /// The loop ended before the OS ever resumed the app.
     #[error("event loop exited before window creation")]
     NoWindow,
+    /// No cursor grab mode is supported here (e.g. some remote desktops).
+    #[error("capture cursor")]
+    CursorGrab(#[source] winit::error::ExternalError),
 }
 
 /// Why [`run`] stopped with an error. `E` is the handler's init error.

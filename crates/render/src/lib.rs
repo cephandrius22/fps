@@ -19,16 +19,19 @@ mod passes;
 mod shader;
 mod swapchain;
 mod target;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+mod texture;
 
 use std::fmt::Debug;
 
-use base::BoxError;
+use base::{BoxError, Image};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub use camera::Camera;
-pub use capture::Capture;
 pub use error::RenderError;
 pub use mesh::{MeshData, MeshId, Vertex};
+pub use texture::TextureId;
 
 use error::Result;
 use gpu::Gpu;
@@ -36,6 +39,7 @@ use mesh::MeshStore;
 use passes::{BlitPass, MeshPass};
 use swapchain::Swapchain;
 use target::{COLOR_FORMAT, LowRes};
+use texture::TextureStore;
 
 /// Shader programs the renderer needs. The caller decides where their
 /// source lives (see [`Renderer::new`]).
@@ -99,6 +103,8 @@ impl Default for RenderConfig {
 pub struct Draw {
     /// Mesh to draw.
     pub mesh: MeshId,
+    /// Texture, multiplied with vertex color. None draws untextured.
+    pub texture: Option<TextureId>,
     /// Object → world transform.
     pub model: glam::Mat4,
 }
@@ -130,6 +136,7 @@ pub struct Renderer {
     config: RenderConfig,
     target: LowRes,
     meshes: MeshStore,
+    textures: TextureStore,
     mesh_pass: MeshPass,
     blit_pass: BlitPass,
 }
@@ -183,7 +190,8 @@ impl Renderer {
                 source: err.into(),
             })
         };
-        let mesh_pass = MeshPass::new(&gpu.device, &load(Shader::Mesh)?)?;
+        let textures = TextureStore::new(&gpu.device, &gpu.queue);
+        let mesh_pass = MeshPass::new(&gpu.device, textures.layout(), &load(Shader::Mesh)?)?;
         let blit_pass = BlitPass::new(&gpu.device, output_format, &target, &load(Shader::Blit)?)?;
 
         Ok(Self {
@@ -192,6 +200,7 @@ impl Renderer {
             config,
             target,
             meshes: MeshStore::default(),
+            textures,
             mesh_pass,
             blit_pass,
         })
@@ -214,6 +223,24 @@ impl Renderer {
         self.meshes.destroy(id)
     }
 
+    /// Uploads an sRGB RGBA8 image. Sampled nearest-neighbor, repeating.
+    pub fn create_texture(&mut self, image: &Image) -> Result<TextureId> {
+        self.textures
+            .create(&self.gpu.device, &self.gpu.queue, image)
+    }
+
+    /// Replaces a texture's pixels (any size) in place; the handle and
+    /// every draw using it stay valid. Used by hot reload.
+    pub fn replace_texture(&mut self, id: TextureId, image: &Image) -> Result<()> {
+        self.textures
+            .replace(&self.gpu.device, &self.gpu.queue, id, image)
+    }
+
+    /// Frees a texture. False if the handle was already stale.
+    pub fn destroy_texture(&mut self, id: TextureId) -> bool {
+        self.textures.destroy(id)
+    }
+
     /// Draws one frame and presents it. Skips silently when the window
     /// cannot present (minimized, occluded).
     pub fn render(&mut self, view: &FrameView) {
@@ -223,8 +250,13 @@ impl Renderer {
             .prepare(&self.gpu.device, &self.gpu.queue, view_proj, view.draws);
 
         let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
-        self.mesh_pass
-            .record(&mut encoder, &self.target, &self.meshes, view.draws);
+        self.mesh_pass.record(
+            &mut encoder,
+            &self.target,
+            &self.meshes,
+            &self.textures,
+            view.draws,
+        );
 
         let Some(swapchain) = &mut self.swapchain else {
             self.gpu.queue.submit([encoder.finish()]);
@@ -250,7 +282,7 @@ impl Renderer {
 
     /// Last rendered low-res frame, as RGBA8 (sRGB). Blocks until the GPU
     /// is idle; meant for debug captures and tests, not per-frame use.
-    pub fn capture(&self) -> Result<Capture> {
+    pub fn capture(&self) -> Result<Image> {
         capture::read(&self.gpu.device, &self.gpu.queue, &self.target)
     }
 

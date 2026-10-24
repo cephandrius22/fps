@@ -10,15 +10,19 @@ mod app;
 mod assets;
 mod debug;
 mod error;
+mod fly;
 mod gfx;
 mod input;
 mod sim;
 
-pub use base::{BoxError, Button, Key};
+pub use base::{BoxError, Button, Image, Key};
 pub use error::EngineError;
-pub use gfx::{Camera, Frame, Gfx, MeshData, MeshHandle, Scaling, VSync, Vertex, Video};
+pub use fly::{FlyCamera, FlySettings, MouseLook};
+pub use gfx::{
+    Camera, Frame, Gfx, MeshData, MeshHandle, Scaling, TextureHandle, VSync, Vertex, Video,
+};
 pub use glam as math;
-pub use input::Input;
+pub use input::{CursorMode, Input};
 pub use sim::Tick;
 
 /// Engine startup settings.

@@ -11,7 +11,7 @@ pub mod vfs;
 pub mod watch;
 
 pub use error::{BoxError, chain};
-pub use image::ImageError;
+pub use image::{Image, ImageError};
 pub use keys::{Button, Key};
 pub use slots::{SlotId, Slots};
 pub use vfs::{Vfs, VfsError};

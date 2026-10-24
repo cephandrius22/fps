@@ -1,6 +1,6 @@
 [package]
 name = "game"
-description = "Game layer. Phase 0: spinning cube sandbox."
+description = "Game layer. For now a fly-through sandbox."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

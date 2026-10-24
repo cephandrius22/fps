@@ -13,5 +13,9 @@ platform.workspace = true
 render.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+# Shared GPU-test skip policy.
+render = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

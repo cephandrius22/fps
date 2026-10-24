@@ -1806,6 +1806,7 @@ dependencies = [
  "naga",
  "pollster",
  "raw-window-handle",
+ "render",
  "thiserror 2.0.21",
  "wgpu",
 ]

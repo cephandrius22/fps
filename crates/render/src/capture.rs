@@ -3,35 +3,15 @@
 //!
 //!   color texture ─copy─► staging buffer (rows padded to 256 B) ─map─► RGBA
 
-use crate::error::{RenderError, Result};
+use base::Image;
 
+use crate::error::{RenderError, Result};
 use crate::target::LowRes;
 
 const BYTES_PER_PIXEL: u32 = 4;
 
-/// Tightly packed RGBA8 pixels, sRGB-encoded, top row first.
-pub struct Capture {
-    /// Width in pixels.
-    pub width: u32,
-    /// Height in pixels.
-    pub height: u32,
-    /// `width * height * 4` bytes.
-    pub rgba: Vec<u8>,
-}
-
-impl Capture {
-    /// RGBA at (x, y), or None outside the image.
-    pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-
-        let i = ((y * self.width + x) * BYTES_PER_PIXEL) as usize;
-        self.rgba[i..i + 4].try_into().ok()
-    }
-}
-
-pub(crate) fn read(device: &wgpu::Device, queue: &wgpu::Queue, target: &LowRes) -> Result<Capture> {
+/// Copies the target to the CPU as an sRGB RGBA8 image.
+pub(crate) fn read(device: &wgpu::Device, queue: &wgpu::Queue, target: &LowRes) -> Result<Image> {
     let row_bytes = target.width * BYTES_PER_PIXEL;
     let padded_row = row_bytes.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
 
@@ -73,11 +53,10 @@ pub(crate) fn read(device: &wgpu::Device, queue: &wgpu::Queue, target: &LowRes) 
     let mapped = staging.slice(..).get_mapped_range()?;
     let rgba = strip_padding(&mapped, row_bytes as usize, padded_row as usize);
 
-    Ok(Capture {
-        width: target.width,
-        height: target.height,
-        rgba,
-    })
+    // Cannot fail: strip_padding yields exactly width × height × 4 bytes.
+    let image =
+        Image::new(target.width, target.height, rgba).expect("readback matches target size");
+    Ok(image)
 }
 
 /// Drops the alignment bytes at the end of each row.
@@ -98,17 +77,5 @@ mod tests {
         // 2 rows of 3 bytes, padded to 4: [a a a _][b b b _].
         let padded = [1, 2, 3, 0, 4, 5, 6, 0];
         assert_eq!(strip_padding(&padded, 3, 4), [1, 2, 3, 4, 5, 6]);
-    }
-
-    #[test]
-    fn pixel_indexes_row_major_and_bounds_checks() {
-        let capture = Capture {
-            width: 2,
-            height: 1,
-            rgba: vec![1, 2, 3, 4, 5, 6, 7, 8],
-        };
-
-        assert_eq!(capture.pixel(1, 0), Some([5, 6, 7, 8]));
-        assert_eq!(capture.pixel(2, 0), None);
     }
 }

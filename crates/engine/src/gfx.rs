@@ -1,14 +1,18 @@
 //! Game-facing graphics types and their translation to the renderer.
 //! This module is the only place engine and render types meet.
 
+use base::{BoxError, Image, Vfs};
 use glam::camera::rh::view;
 use glam::{Mat4, Vec3};
 use render::{Draw, Renderer};
 
+use crate::assets::{self, Asset, Registry};
+use crate::error::EngineError;
+
 /// Near clip plane, meters. Small enough for a held weapon model.
-const DEFAULT_NEAR: f32 = 0.05;
+pub(crate) const DEFAULT_NEAR: f32 = 0.05;
 /// Far clip plane, meters.
-const DEFAULT_FAR: f32 = 1000.0;
+pub(crate) const DEFAULT_FAR: f32 = 1000.0;
 const DEFAULT_FOV_DEG: f32 = 70.0;
 const DEFAULT_EYE: Vec3 = Vec3::new(0.0, 0.0, 5.0);
 
@@ -121,6 +125,11 @@ impl MeshData {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MeshHandle(render::MeshId);
 
+/// Handle to a loaded texture. Copy freely; valid until destroyed.
+/// Hot reload swaps the pixels behind it without changing the handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureHandle(render::TextureId);
+
 /// Viewpoint and lens. World is right-handed, Y up.
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
@@ -164,9 +173,43 @@ impl Default for Camera {
 /// Resource creation, available during `Game::init`.
 pub struct Gfx<'a> {
     pub(crate) renderer: &'a mut Renderer,
+    pub(crate) vfs: &'a Vfs,
+    pub(crate) registry: &'a mut Registry,
 }
 
 impl Gfx<'_> {
+    /// Loads a PNG from the asset directory, e.g. "textures/crate.png",
+    /// and watches it: saving the file updates the texture live.
+    pub fn load_texture(&mut self, path: &str) -> Result<TextureHandle, EngineError> {
+        let load_err = |source: BoxError| EngineError::Load {
+            path: path.to_owned(),
+            source,
+        };
+
+        let image = assets::load_image(self.vfs, path).map_err(load_err)?;
+        let id = self
+            .renderer
+            .create_texture(&image)
+            .map_err(|err| load_err(err.into()))?;
+        self.registry.register(path, Asset::Texture(id));
+
+        Ok(TextureHandle(id))
+    }
+
+    /// Uploads an in-memory image, e.g. a generated pattern. Not watched.
+    pub fn create_texture(&mut self, image: &Image) -> Result<TextureHandle, EngineError> {
+        Ok(TextureHandle(self.renderer.create_texture(image)?))
+    }
+
+    /// Frees a texture and stops watching its file. Destroying twice is a
+    /// bug (flagged by `verify!`).
+    pub fn destroy_texture(&mut self, texture: TextureHandle) {
+        let destroyed = self.renderer.destroy_texture(texture.0);
+        base::verify!(destroyed, "texture {texture:?} destroyed twice");
+
+        self.registry.forget(Asset::Texture(texture.0));
+    }
+
     /// Uploads a mesh to the GPU.
     pub fn create_mesh(&mut self, data: &MeshData) -> MeshHandle {
         MeshHandle(self.renderer.create_mesh(&data.to_render()))
@@ -207,6 +250,16 @@ impl Frame {
     pub fn draw_mesh(&mut self, mesh: MeshHandle, model: Mat4) {
         self.draws.push(Draw {
             mesh: mesh.0,
+            texture: None,
+            model,
+        });
+    }
+
+    /// Queues `mesh` with `texture` (multiplied by vertex color).
+    pub fn draw_textured(&mut self, mesh: MeshHandle, texture: TextureHandle, model: Mat4) {
+        self.draws.push(Draw {
+            mesh: mesh.0,
+            texture: Some(texture.0),
             model,
         });
     }
@@ -289,5 +342,55 @@ mod tests {
 
         assert!(frame.draws.is_empty());
         assert_eq!(frame.alpha, 0.25);
+    }
+
+    fn repo_assets() -> Vfs {
+        Vfs::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets")).unwrap()
+    }
+
+    fn headless(vfs: &Vfs) -> Option<Renderer> {
+        let source = |shader| vfs.read_text(crate::assets::shader_path(shader));
+        render::test_support::headless_or_skip(Default::default(), source)
+    }
+
+    #[test]
+    fn load_texture_watches_path_until_destroyed() {
+        let vfs = repo_assets();
+        let Some(mut renderer) = headless(&vfs) else {
+            return;
+        };
+        let mut registry = Registry::with_shaders();
+        let mut gfx = Gfx {
+            renderer: &mut renderer,
+            vfs: &vfs,
+            registry: &mut registry,
+        };
+
+        let texture = gfx.load_texture("textures/crate.png").unwrap();
+        assert_eq!(
+            gfx.registry.lookup("textures/crate.png"),
+            Some(Asset::Texture(texture.0))
+        );
+
+        gfx.destroy_texture(texture);
+        assert_eq!(gfx.registry.lookup("textures/crate.png"), None);
+    }
+
+    #[test]
+    fn load_texture_error_names_the_path() {
+        let vfs = repo_assets();
+        let Some(mut renderer) = headless(&vfs) else {
+            return;
+        };
+        let mut registry = Registry::with_shaders();
+        let mut gfx = Gfx {
+            renderer: &mut renderer,
+            vfs: &vfs,
+            registry: &mut registry,
+        };
+
+        let err = gfx.load_texture("textures/nope.png").unwrap_err();
+        assert!(matches!(&err, EngineError::Load { path, .. } if path == "textures/nope.png"));
+        assert_eq!(gfx.registry.lookup("textures/nope.png"), None);
     }
 }

@@ -4,17 +4,17 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 
 ---
 
-## Status (2026-10-23)
+## Status (2026-10-24)
 
-**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phase 0 is done**, apart from CI, which has never run because the repo has no remote yet. See [README.md](README.md) for how the code is organized and how to build it.
+**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phases 0 and 0.5 are done** and CI is green on all three OSes. **Phase 1 is in progress**: the fly camera and textured meshes are done. See [README.md](README.md) for how the code is organized and how to build it.
 
 ### Roadmap
 
 | Phase | Goal | Status |
 |---|---|---|
-| 0 — Foundations | Window, loop, GPU, low-res cube | ✅ Done (CI unverified) |
-| 0.5 — Follow-ups | Code-health items found in review | 🟡 Code done; CI still unverified |
-| 1 — First world | Fly through a lit, fogged BSP level | Not started |
+| 0 — Foundations | Window, loop, GPU, low-res cube | ✅ Done |
+| 0.5 — Follow-ups | Code-health items found in review | ✅ Done (optional renames skipped) |
+| 1 — First world | Fly through a lit, fogged BSP level | 🟡 In progress: 2 of 7 items done |
 | 2 — Walking around | Collision, character controller, entities, Lua | Not started |
 | 3 — Own toolchain | `mapc`, lightmap baker, glTF props | Not started |
 | 4 — Dynamic lighting and atmosphere | Dynamic lights, flashlight shadows, fog volumes, 3D audio | Not started |
@@ -28,19 +28,20 @@ Section 11 has the detail for each phase.
 | Area | What exists | Where |
 |---|---|---|
 | Build | Cargo workspace, one crate per layer, dependency versions set once in the root manifest | `Cargo.toml`, `crates/` |
-| Platform | winit window, OS events translated to engine `Key`/`Button`, fixed-timestep clock (60 Hz, stall cap) | `crates/platform` |
-| Renderer | wgpu device and swapchain, 640×360 low-res target with depth, nearest-neighbor letterboxed upscale (fit or integer), mesh pass with back-face culling, frame readback | `crates/render` |
-| Lighting | L0: vertex color plus a fixed sun term. The vertex format already has a lightmap UV slot. | `assets/shaders/mesh.wgsl` |
-| Engine core | Main loop, per-tick input state, `Game` trait (`init` / `tick` / `draw` with interpolation), engine-owned public types | `crates/engine` |
-| Resources | Asset filesystem (`assets/` discovery), meshes addressed by generational handles | `crates/base`, `crates/render` |
-| Hot reload | File watcher plus an asset registry. Only shaders reload so far; a bad shader is rejected and the old one stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
+| Platform | winit window, cursor capture (locked, falling back to confined), OS events translated to engine `Key`/`Button`, fixed-timestep clock (60 Hz, stall cap) | `crates/platform` |
+| Renderer | wgpu device and swapchain, 640×360 low-res target with depth, nearest-neighbor letterboxed upscale (fit or integer), mesh pass with back-face culling, textures (sRGB, nearest, repeat, no mipmaps, white fallback, in-place replace), frame readback | `crates/render` |
+| Lighting | L0: texture × vertex color × a fixed sun term. The vertex format already has a lightmap UV slot. | `assets/shaders/mesh.wgsl` |
+| Engine core | Main loop, per-tick input state, cursor mode requests, `Game` trait (`init` / `tick` / `draw` with interpolation), engine-owned public types | `crates/engine` |
+| Camera | `FlyCamera`: WASD + Space/Ctrl, Shift for speed, mouse or arrow-key look, pitch clamp, per-frame interpolation | `crates/engine/src/fly.rs` |
+| Resources | Asset filesystem (`assets/` discovery), PNG decoding (all color types) to `base::Image`, meshes and textures addressed by generational handles | `crates/base`, `crates/render`, `crates/engine/src/gfx.rs` |
+| Hot reload | File watcher plus an asset registry. Shaders and textures reload; a bad file is rejected and the old version stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
 | Debugging | Logging (`RUST_LOG`), `verify!` asserts, F12 screenshot, `ENGINE_CAPTURE_FRAME=N` capture-and-exit | `crates/base`, `crates/engine/src/debug.rs` |
 | Errors | Typed `thiserror` errors per area; `EngineError` categories for games; `base::chain` for logs | `crates/*/src/error.rs` and per module |
-| Tests | 80 tests: unit tests per crate, headless GPU pixel tests, naga shader validation | `cargo test` |
-| CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows with the pinned toolchain; Linux runs GPU tests on Mesa lavapipe | `.github/workflows/ci.yml` (never run) |
+| Tests | 116 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
+| CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows with the pinned toolchain. GPU tests run on all three (Linux via Mesa lavapipe); a skip would show as a run warning. | `.github/workflows/ci.yml` |
 | Build config | Toolchain pinned to 1.99.1, lints in `[workspace.lints]`, `publish = false`, dependency debug info reduced to line tables | `rust-toolchain.toml`, `Cargo.toml` |
 
-Not implemented yet, though the plan's sections describe them: textures, maps, lightmaps, fog, the palette post-pass, collision, entities, scripting, audio.
+Not implemented yet, though the plan's sections describe them: maps, lightmaps, fog, the palette post-pass, mipmaps, collision, entities, scripting, audio.
 
 ---
 
@@ -269,20 +270,21 @@ Each phase ends with something runnable.
 - ✅ **Milestone:** a spinning colored cube at low resolution with nearest-neighbor upscale. Verified with a captured frame on Apple M1 (Metal).
 - Beyond scope, also done: screenshot capture, a headless renderer with pixel-checking GPU tests, generational mesh handles, enforced layer boundaries, README.
 
-### Phase 0.5 — Follow-ups (days) — code done, CI pending
+### Phase 0.5 — Follow-ups (days) — ✅ done
 Found in review. Each is cheaper now than once Phase 1 builds on top of it.
-- ⏳ Push to GitHub and get CI green on Linux and Windows. Confirm the lavapipe GPU tests run on Linux.
+- ✅ Pushed to GitHub; CI green on Linux, Windows and macOS. GPU tests run on all three (Linux on lavapipe).
 - ✅ Typed errors (`thiserror`) in the library crates, so callers can tell "no GPU" from "bad shader". `anyhow` stays in `game`.
 - ✅ Lint settings in a root `[workspace.lints]` table instead of per-crate attributes. `unsafe_code` is forbidden there too.
 - ✅ `publish = false` on internal crates.
 - ✅ Toolchain pinned with `rust-toolchain.toml`, so local and CI clippy agree.
-- Optional: prefix crate names (e.g. `retro-render`) and switch `passes/mod.rs` to `passes.rs`.
-- **Milestone:** CI green on all three OSes.
+- Skipped for now (optional): prefix crate names (e.g. `retro-render`) and switch `passes/mod.rs` to `passes.rs`.
+- ✅ **Milestone:** CI green on all three OSes.
 
-### Phase 1 — First world (2–4 weeks)
-- Fly camera (perspective projection already exists).
-- Textured meshes, nearest-neighbor sampling. Add texture hot reload to the asset registry.
-- Load a map: ericw-tools BSP loader as the shortcut.
+### Phase 1 — First world (2–4 weeks) — in progress
+- ✅ Fly camera: `engine::FlyCamera`, with mouse look through cursor capture (click to capture, Esc to release) and arrow-key look as a fallback.
+- ✅ Textured meshes, nearest-neighbor sampling, texture hot reload through the asset registry. PNG only; no mipmaps (distant surfaces shimmer, as in software renderers).
+- Mipmaps as a config toggle, so the shimmer becomes a choice. Small; fits alongside the palette post-pass.
+- Load a map: ericw-tools BSP loader as the shortcut. Needs ericw-tools and a test map built in TrenchBroom (or a generated `.map`).
 - Baked lightmaps (L1) and distance fog (F0). The vertex format already has `lightmap_uv`.
 - Retro post-pass: palette LUT and dithering toggle, in `blit.wgsl`.
 - Add a reference-image test: capture a known view of a test map and compare it against a stored PNG.

@@ -47,6 +47,19 @@ pub enum RenderError {
     /// The mapped readback range could not be accessed.
     #[error("access readback buffer")]
     MapRange(#[from] wgpu::MapRangeError),
+    /// The image exceeds the GPU's texture size limit.
+    #[error("texture {width}×{height} exceeds GPU limit {max}")]
+    TextureTooLarge {
+        /// Image width.
+        width: u32,
+        /// Image height.
+        height: u32,
+        /// Largest supported dimension.
+        max: u32,
+    },
+    /// The texture handle was destroyed.
+    #[error("unknown or destroyed texture")]
+    UnknownTexture,
     /// wgpu dropped the map callback without calling it.
     #[error("readback callback dropped")]
     MapDropped,

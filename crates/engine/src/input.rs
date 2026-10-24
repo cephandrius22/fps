@@ -7,6 +7,25 @@
 use base::{Button, Key};
 use platform::{Event, KeyState};
 
+/// What the mouse cursor does. Set it with `Tick::set_cursor`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorMode {
+    /// Visible and free to leave the window.
+    #[default]
+    Free,
+    /// Hidden and held by the window. Use for mouse look.
+    Captured,
+}
+
+impl CursorMode {
+    pub(crate) fn to_platform(self) -> platform::CursorMode {
+        match self {
+            CursorMode::Free => platform::CursorMode::Free,
+            CursorMode::Captured => platform::CursorMode::Captured,
+        }
+    }
+}
+
 /// Keyboard and mouse state as seen by one simulation tick.
 #[derive(Default)]
 pub struct Input {
@@ -157,5 +176,15 @@ mod tests {
         input.apply(Event::FocusLost);
 
         assert!(!input.is_down(Key::A));
+    }
+
+    #[test]
+    fn cursor_mode_maps_to_platform() {
+        assert_eq!(CursorMode::Free.to_platform(), platform::CursorMode::Free);
+        assert_eq!(
+            CursorMode::Captured.to_platform(),
+            platform::CursorMode::Captured
+        );
+        assert_eq!(CursorMode::default(), CursorMode::Free);
     }
 }

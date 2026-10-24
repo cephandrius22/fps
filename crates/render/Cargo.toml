@@ -15,9 +15,16 @@ raw-window-handle = "0.6.2"
 thiserror.workspace = true
 wgpu.workspace = true
 
+[features]
+# GPU test helpers (render::test_support). Dev-dependencies only.
+test-support = []
+
 [dev-dependencies]
 # Same version wgpu uses, so validation matches what runs on the GPU.
 naga = { version = "30.0.1", features = ["wgsl-in"] }
+# Integration tests are a separate crate; this turns test-support on
+# for them.
+render = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

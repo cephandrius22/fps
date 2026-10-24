@@ -3,7 +3,7 @@
 use platform::Flow;
 
 use crate::Game;
-use crate::input::Input;
+use crate::input::{CursorMode, Input};
 
 /// One simulation step, handed to `Game::tick`.
 pub struct Tick<'a> {
@@ -12,6 +12,7 @@ pub struct Tick<'a> {
     /// Seconds per tick (fixed).
     pub dt: f32,
     quit: bool,
+    cursor: CursorMode,
 }
 
 impl Tick<'_> {
@@ -19,19 +20,40 @@ impl Tick<'_> {
     pub fn quit(&mut self) {
         self.quit = true;
     }
+
+    /// Current cursor mode. The engine resets it to `Free` when the
+    /// window loses focus.
+    pub fn cursor(&self) -> CursorMode {
+        self.cursor
+    }
+
+    /// Requests a cursor mode; applied to the window after this frame's
+    /// ticks.
+    pub fn set_cursor(&mut self, mode: CursorMode) {
+        self.cursor = mode;
+    }
 }
 
 /// Runs `ticks` steps. Input edges are cleared after each, so only the
 /// first tick of a frame sees a fresh press. Stops early on quit.
-pub(crate) fn run_ticks(game: &mut impl Game, input: &mut Input, ticks: u32, dt: f32) -> Flow {
+/// `cursor` carries the game's cursor requests in and out.
+pub(crate) fn run_ticks(
+    game: &mut impl Game,
+    input: &mut Input,
+    cursor: &mut CursorMode,
+    ticks: u32,
+    dt: f32,
+) -> Flow {
     for _ in 0..ticks {
         let mut tick = Tick {
             input,
             dt,
             quit: false,
+            cursor: *cursor,
         };
         game.tick(&mut tick);
         let quit = tick.quit;
+        *cursor = tick.cursor;
 
         input.end_tick();
 
@@ -51,12 +73,14 @@ mod tests {
     use super::*;
     use crate::{Frame, Gfx};
 
-    /// Records what each tick saw; quits on the configured tick.
+    /// Records what each tick saw; quits or captures on configured ticks.
     #[derive(Default)]
     struct Recorder {
         pressed: Vec<bool>,
         dts: Vec<f32>,
+        cursors: Vec<CursorMode>,
         quit_on: Option<usize>,
+        capture_on: Option<usize>,
     }
 
     impl Game for Recorder {
@@ -67,13 +91,23 @@ mod tests {
         fn tick(&mut self, tick: &mut Tick) {
             self.pressed.push(tick.input.was_pressed(Key::Space));
             self.dts.push(tick.dt);
+            self.cursors.push(tick.cursor());
 
-            if self.quit_on == Some(self.pressed.len()) {
+            let n = Some(self.pressed.len());
+            if self.capture_on == n {
+                tick.set_cursor(CursorMode::Captured);
+            }
+            if self.quit_on == n {
                 tick.quit();
             }
         }
 
         fn draw(&mut self, _: &mut Frame) {}
+    }
+
+    /// `run_ticks` with a free cursor.
+    fn run(game: &mut Recorder, input: &mut Input, ticks: u32, dt: f32) -> Flow {
+        run_ticks(game, input, &mut CursorMode::Free, ticks, dt)
     }
 
     fn pressed_space() -> Input {
@@ -88,7 +122,7 @@ mod tests {
     #[test]
     fn runs_each_tick_with_fixed_dt() {
         let mut game = Recorder::default();
-        let flow = run_ticks(&mut game, &mut Input::default(), 3, 0.5);
+        let flow = run(&mut game, &mut Input::default(), 3, 0.5);
 
         assert_eq!(flow, Flow::Continue);
         assert_eq!(game.dts, [0.5, 0.5, 0.5]);
@@ -97,7 +131,7 @@ mod tests {
     #[test]
     fn only_first_tick_sees_a_press() {
         let mut game = Recorder::default();
-        run_ticks(&mut game, &mut pressed_space(), 3, 0.1);
+        run(&mut game, &mut pressed_space(), 3, 0.1);
 
         assert_eq!(game.pressed, [true, false, false]);
     }
@@ -107,8 +141,8 @@ mod tests {
         let mut game = Recorder::default();
         let mut input = pressed_space();
 
-        run_ticks(&mut game, &mut input, 0, 0.1);
-        run_ticks(&mut game, &mut input, 1, 0.1);
+        run(&mut game, &mut input, 0, 0.1);
+        run(&mut game, &mut input, 1, 0.1);
 
         assert_eq!(game.pressed, [true]);
     }
@@ -119,9 +153,23 @@ mod tests {
             quit_on: Some(2),
             ..Default::default()
         };
-        let flow = run_ticks(&mut game, &mut Input::default(), 5, 0.1);
+        let flow = run(&mut game, &mut Input::default(), 5, 0.1);
 
         assert_eq!(flow, Flow::Exit);
         assert_eq!(game.pressed.len(), 2);
+    }
+
+    #[test]
+    fn cursor_request_carries_to_later_ticks_and_out() {
+        let mut game = Recorder {
+            capture_on: Some(1),
+            ..Default::default()
+        };
+        let mut cursor = CursorMode::Free;
+
+        run_ticks(&mut game, &mut Input::default(), &mut cursor, 2, 0.1);
+
+        assert_eq!(game.cursors, [CursorMode::Free, CursorMode::Captured]);
+        assert_eq!(cursor, CursorMode::Captured);
     }
 }

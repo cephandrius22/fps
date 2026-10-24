@@ -4,16 +4,17 @@ A from-scratch first-person engine in Rust with a Quake / Half-Life-era look:
 low internal resolution, chunky nearest-neighbor pixels, a hand-written
 renderer. The look is a setting, not a limit, so the engine can grow past it.
 
-**Status:** Phase 0 (foundations) of
-[retro-fps-engine-plan.md](retro-fps-engine-plan.md). It renders a spinning
-cube at 640×360, upscaled to the window.
+**Status:** Phase 1 (first world) of
+[retro-fps-engine-plan.md](retro-fps-engine-plan.md), in progress. The
+sandbox is a fly-through scene: a tiled stone floor, textured crates and a
+spinning cube, rendered at 640×360 and upscaled to the window.
 
 ## Quick start
 
 Requires [rustup](https://rustup.rs). The compiler version is pinned in
 `rust-toolchain.toml`, and rustup installs it on first build. There are no
-system libraries on macOS
-or Windows. On Linux, install `libxkbcommon-dev libwayland-dev libx11-dev`.
+system libraries on macOS or Windows. On Linux, install
+`libxkbcommon-dev libwayland-dev libx11-dev`.
 
 ```bash
 cargo run -p game
@@ -21,15 +22,21 @@ cargo run -p game
 
 | Input | Action |
 |---|---|
-| Esc | Quit |
+| Left click | Capture the mouse for mouse look |
+| Mouse / arrow keys | Look around |
+| W A S D | Fly forward, left, back, right |
+| Space / Left Ctrl | Fly up / down |
+| Left Shift | Fly faster |
+| Esc | Release the mouse; if already released, quit |
 | F12 | Save a screenshot to `screenshots/<timestamp>.png` |
 
-While it runs, edit `assets/shaders/*.wgsl` and save. The shader reloads
-live. A broken shader logs its error and the last good version stays active.
+While it runs, edit `assets/shaders/*.wgsl` or `assets/textures/*.png` and
+save. The file reloads live. A broken file logs its error and the last good
+version stays active.
 
 | Environment variable | Effect |
 |---|---|
-| `RUST_LOG=debug` | More logging (default: `info`, GPU internals at `warn`) |
+| `RUST_LOG=debug` | More logging (default: `info`, GPU internals at `warn`). `RUST_LOG=engine::app=trace` logs every OS event. |
 | `ENGINE_ASSETS=<dir>` | Use this asset directory instead of searching upward for `assets/` |
 | `ENGINE_CAPTURE_FRAME=<n>` | Save frame *n* to `screenshots/frame-<n>.png`, then exit |
 | `REQUIRE_GPU=1` | Make GPU tests fail, instead of skip, when no GPU is found |
@@ -38,12 +45,13 @@ live. A broken shader logs its error and the last good version stays active.
 
 ```
 assets/shaders/    WGSL shaders (hot-reloadable)
+assets/textures/   PNG textures (hot-reloadable)
 crates/
-  base/            foundation: logging, verify!, Key/Button, Slots, Vfs, Watcher, PNG
-  platform/        OS layer: window, OS events, fixed-timestep clock (wraps winit)
-  render/          renderer: low-res target, passes, readback (wraps wgpu)
-  engine/          main loop + the API games are written against
-game/              the game layer; today a cube sandbox
+  base/            foundation: logging, verify!, Key/Button, Slots, Vfs, Watcher, Image/PNG
+  platform/        OS layer: window, cursor capture, OS events, fixed-timestep clock (wraps winit)
+  render/          renderer: low-res target, meshes, textures, passes, readback (wraps wgpu)
+  engine/          main loop, fly camera, asset loading + the API games are written against
+game/              the game layer; today a fly-through sandbox
 ```
 
 ## Architecture
@@ -72,7 +80,8 @@ Dependency rules:
 - Library types stop at their wrapper. winit never leaves `platform` and
   wgpu never leaves `render`.
 - Lower-layer types stop at `engine`. Games use `engine::Camera`,
-  `engine::MeshData` and `engine::MeshHandle`. `engine/src/gfx.rs` is the
+  `engine::MeshData`, `engine::MeshHandle`, `engine::TextureHandle` and
+  `engine::CursorMode`. `engine/src/gfx.rs` is the
   only place they are converted to `render` types, so render internals can
   change without breaking games.
 - `base` has no knowledge of windows, GPUs or game rules. Shared vocabulary
@@ -86,10 +95,11 @@ platform event loop
   │  OS events ──► engine: Input::apply / Renderer::resize
   ▼  redraw
 engine App::frame
-  1. hot reload   Watcher ─► Vfs path ─► Registry ─► Renderer::reload_shader
+  1. hot reload   Watcher ─► Vfs path ─► Registry ─► assets::reload
+                  (shader: recompile; texture: decode, replace in place)
   2. simulate     FixedStep::advance → N ticks → Game::tick(Tick { input, dt })
-                  (input edges cleared after each tick)
-  3. describe     Game::draw(Frame { camera, alpha }) → frame.draw_mesh(...)
+                  (input edges cleared after each tick; cursor requests applied after)
+  3. describe     Game::draw(Frame { camera, alpha }) → draw_mesh / draw_textured
   4. render       MeshPass → 640×360 target → BlitPass (nearest, letterbox) → window
   5. debug        F12 / ENGINE_CAPTURE_FRAME → Renderer::capture → PNG
 ```
@@ -105,9 +115,21 @@ engine App::frame
 - **The retro look is a render target.** The scene is drawn at
   `Video::internal_width × internal_height`, then upscaled with nearest
   sampling. Phase 1 will add a palette and dither pass in `blit.wgsl`.
-- **Handles, not references.** `MeshHandle` wraps a generational
-  `base::SlotId`. A handle to a destroyed mesh is detected rather than
-  silently drawing whatever reused its slot.
+- **Handles, not references.** `MeshHandle` and `TextureHandle` wrap a
+  generational `base::SlotId`. A handle to a destroyed resource is detected
+  rather than silently drawing whatever reused its slot. Hot reload replaces
+  a texture's pixels behind its handle, so draws never need updating.
+- **Textures.** PNG files are decoded to RGBA8 (`base::Image`), uploaded as
+  sRGB, and sampled nearest-neighbor with repeat, so UVs past 1 tile. There
+  are no mipmaps, so distant surfaces shimmer, the way 1990s software
+  renderers did. Draws without a texture use a 1×1 white one, so the shader
+  has no untextured special case. Fragment color = texture × vertex color ×
+  light.
+- **Cameras.** `engine::FlyCamera` is a ready-made free-flying camera
+  (no collision). Update it in `tick`, read it in `draw` with
+  `camera(frame.alpha)` so motion is smooth at any frame rate. Mouse look
+  needs `tick.set_cursor(CursorMode::Captured)`; the engine frees the cursor
+  when the window loses focus.
 - **Errors.** Library crates return typed errors, one `thiserror` enum
   per area (`VfsError`, `RenderError`, `EngineError`, ...), so callers can
   match on what went wrong. Each error's message covers only its own level;
@@ -123,11 +145,13 @@ engine App::frame
 |---|---|
 | Write game logic | `game/src/main.rs`: implement `engine::Game` (`init`, `tick`, `draw`) |
 | Tweak shading | `assets/shaders/mesh.wgsl`, live while running |
+| Add a texture | Put a PNG in `assets/textures/`, load it in `init` with `gfx.load_texture("textures/x.png")?`, draw with `frame.draw_textured(mesh, texture, model)` |
+| Use a camera | `FlyCamera` for exploring; write your own by setting `frame.camera` in `draw` |
 | Change resolution or scaling | `Config { video: Video { .. } }` in `game/src/main.rs` |
 | Add a key | `base/src/keys.rs` (variant, update `COUNT`) and `platform/src/event.rs` (`map_key`) |
 | Add a shader | `render::Shader` variant, use it in a pass, add its path to `engine/src/assets.rs` (`shader_path`), add the file to the `shaders` test |
 | Add a render pass | `crates/render/src/passes/`, record it in `Renderer::render` |
-| Add a reloadable asset type | `Asset` variant and `Registry::register` in `engine/src/assets.rs`, dispatch in `App::reload_assets` |
+| Add a reloadable asset type | `Asset` variant and its case in `assets::reload` (`engine/src/assets.rs`); register the path when the asset is loaded |
 | Expose a renderer feature to games | Add an engine-side type in `engine/src/gfx.rs` and convert there. Never re-export a `render` type. |
 
 ## Testing
@@ -138,15 +162,16 @@ cargo test
 
 | Area | Covered by |
 |---|---|
-| `base` | unit tests: slots, Vfs, watcher, PNG round-trip, `verify!` |
-| `platform` | unit tests: clock math (injected time), key/button mapping |
-| `render` | unit tests: camera, letterbox, vertex layout, readback padding |
-| `render` GPU | `tests/headless.rs`: renders offscreen and checks pixels (culling, depth, shader reload) |
+| `base` | unit tests: slots, Vfs, watcher, image validation, PNG decode (all color types) and round-trip, error chains |
+| `platform` | unit tests: clock math (injected time), key/button mapping, cursor grab fallback order |
+| `render` | unit tests: camera, letterbox, vertex layout, readback padding, GPU-test skip policy |
+| `render` GPU | `tests/headless.rs`: renders offscreen and checks pixels (culling, depth, shader reload, texture mapping, nearest filtering, texture replace/destroy/size limit) |
 | shaders | `tests/shaders.rs`: naga validates every shipped `.wgsl` (no GPU needed) |
-| `engine` | unit tests: input edges, tick loop, asset registry, type conversion, debug hooks |
-| `game` | cube geometry: counts, bounds, outward winding |
+| `engine` | unit tests: input edges, tick loop, cursor requests, fly camera (movement, look, clamping, interpolation), asset registry, type conversion, debug hooks; GPU tests for texture loading and hot reload |
+| `game` | shape geometry: counts, bounds, outward winding, floor UV tiling |
 
-The GPU tests skip only when no GPU adapter exists; any other renderer
+GPU tests in any crate use `render::test_support` (a dev-only feature), so
+they share one policy: they skip only when no GPU adapter exists; any other renderer
 failure (a broken shader, say) fails them. In CI a skip also shows up as a
 "GPU tests skipped" warning on the run's summary page. Set `REQUIRE_GPU=1`
 to make a missing GPU a failure; Linux CI does this and uses Mesa's software
@@ -176,8 +201,6 @@ To move to a newer Rust: change `channel` in `rust-toolchain.toml`, run
 ## Roadmap
 
 See [retro-fps-engine-plan.md](retro-fps-engine-plan.md). It starts with a
-status section: what is implemented and where each phase stands. Next is
-finishing Phase 0.5: pushing to GitHub so CI can run. After that comes
-Phase 1:
-fly camera, textured meshes, a BSP map loader, lightmaps, fog, and the
-palette/dither post-pass.
+status section: what is implemented and where each phase stands. Phase 1
+is in progress: the fly camera and textured meshes are done. Next come a
+BSP map loader, lightmaps, distance fog, and the palette/dither post-pass.

@@ -68,6 +68,16 @@ impl<T> Slots<T> {
         entry.value.as_ref()
     }
 
+    /// Mutable access, e.g. to replace a value in place and keep its handle.
+    pub fn get_mut(&mut self, id: SlotId) -> Option<&mut T> {
+        let entry = self.entries.get_mut(id.index as usize)?;
+        if entry.generation != id.generation {
+            return None;
+        }
+
+        entry.value.as_mut()
+    }
+
     /// Removes and returns the value. Stale or repeated removes return None.
     pub fn remove(&mut self, id: SlotId) -> Option<T> {
         let entry = self.entries.get_mut(id.index as usize)?;
@@ -119,6 +129,18 @@ mod tests {
         assert_eq!(slots.get(a), None);
         assert_eq!(slots.get(b), Some(&"b"));
         assert_eq!(slots.len(), 1);
+    }
+
+    #[test]
+    fn get_mut_replaces_in_place_and_respects_generation() {
+        let mut slots = Slots::default();
+        let a = slots.insert("a");
+
+        *slots.get_mut(a).unwrap() = "b";
+        assert_eq!(slots.get(a), Some(&"b"));
+
+        slots.remove(a);
+        assert!(slots.get_mut(a).is_none());
     }
 
     #[test]

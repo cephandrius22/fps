@@ -10,4 +10,4 @@ mod window;
 pub use clock::FixedStep;
 pub use event::{Event, KeyState};
 pub use run::{Flow, Handler, PlatformError, RunError, WindowConfig, run};
-pub use window::Window;
+pub use window::{CursorMode, Window};
