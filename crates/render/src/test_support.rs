@@ -3,9 +3,15 @@
 //!
 //! One policy for every GPU test: skip when the machine has no GPU,
 //! fail on anything else, and never skip under $REQUIRE_GPU.
+//!
+//! GPU tests also run one at a time per test binary. Creating and
+//! destroying several devices at once on parallel test threads crashed
+//! the D3D12 software adapter on Windows CI (access violation, about 1
+//! run in 80). The game only ever has one device, so tests match that.
 
 use std::io::Write;
-use std::sync::Once;
+use std::ops::{Deref, DerefMut};
+use std::sync::{Mutex, MutexGuard, Once, PoisonError};
 
 use base::BoxError;
 
@@ -19,14 +25,52 @@ const CI_ENV: &str = "GITHUB_ACTIONS";
 /// One CI warning per test binary, not one per skipped test.
 static ANNOUNCE_SKIP: Once = Once::new();
 
+/// Held for as long as a test has a GPU device.
+static GPU: Mutex<()> = Mutex::new(());
+
+/// Waits until no other test in this binary holds a GPU device. Hold the
+/// guard for the device's whole lifetime.
+pub fn lock_gpu() -> MutexGuard<'static, ()> {
+    // A failed test poisons the lock while holding it; the GPU itself is
+    // fine, so later tests carry on.
+    GPU.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A headless renderer that holds the GPU lock. Use it like a
+/// `Renderer`; dropping it releases the lock after the device is gone.
+pub struct GpuTest {
+    // Field order matters: the renderer drops before the lock.
+    renderer: Renderer,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl Deref for GpuTest {
+    type Target = Renderer;
+
+    fn deref(&self) -> &Renderer {
+        &self.renderer
+    }
+}
+
+impl DerefMut for GpuTest {
+    fn deref_mut(&mut self) -> &mut Renderer {
+        &mut self.renderer
+    }
+}
+
 /// Headless renderer, or None when the test should skip (no GPU).
 /// Panics on any other failure.
 pub fn headless_or_skip<E: Into<BoxError>>(
     config: RenderConfig,
     source: impl Fn(Shader) -> Result<String, E>,
-) -> Option<Renderer> {
+) -> Option<GpuTest> {
+    let lock = lock_gpu();
+
     match Renderer::headless(config, source) {
-        Ok(renderer) => Some(renderer),
+        Ok(renderer) => Some(GpuTest {
+            renderer,
+            _lock: lock,
+        }),
         Err(err) => {
             skip_or_fail(err);
             None
@@ -89,5 +133,16 @@ mod tests {
     #[should_panic(expected = "renderer failed to start")]
     fn non_gpu_errors_fail() {
         skip_or_fail(RenderError::SurfaceUnsupported);
+    }
+
+    #[test]
+    fn gpu_lock_survives_a_panicking_holder() {
+        let _ = std::thread::spawn(|| {
+            let _held = lock_gpu();
+            panic!("test failed while holding the GPU");
+        })
+        .join();
+
+        drop(lock_gpu());
     }
 }

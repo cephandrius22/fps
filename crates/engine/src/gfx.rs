@@ -348,7 +348,7 @@ mod tests {
         Vfs::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets")).unwrap()
     }
 
-    fn headless(vfs: &Vfs) -> Option<Renderer> {
+    fn headless(vfs: &Vfs) -> Option<render::test_support::GpuTest> {
         let source = |shader| vfs.read_text(crate::assets::shader_path(shader));
         render::test_support::headless_or_skip(Default::default(), source)
     }

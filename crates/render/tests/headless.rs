@@ -184,6 +184,7 @@ fn destroy_mesh_invalidates_handle_once() {
 #[test]
 fn failed_shader_load_names_the_shader() {
     let missing = |_| Err::<String, _>(std::io::Error::other("gone"));
+    let _gpu = render::test_support::lock_gpu();
     let err = match Renderer::headless(RenderConfig::default(), missing) {
         Ok(_) => panic!("renderer built without shader source"),
         Err(err @ RenderError::NoAdapter(_)) => {

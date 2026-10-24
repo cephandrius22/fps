@@ -4,7 +4,8 @@
 
 use std::path::PathBuf;
 
-use render::{MeshData, RenderConfig, Renderer, Shader, Vertex};
+use render::test_support::GpuTest;
+use render::{MeshData, RenderConfig, Shader, Vertex};
 
 pub const WIDTH: u32 = 64;
 pub const HEIGHT: u32 = 64;
@@ -25,7 +26,7 @@ pub fn load_shader(shader: Shader) -> std::io::Result<String> {
 }
 
 /// Small headless renderer, or None (test skips) without a GPU.
-pub fn renderer() -> Option<Renderer> {
+pub fn renderer() -> Option<GpuTest> {
     let config = RenderConfig {
         internal_width: WIDTH,
         internal_height: HEIGHT,
