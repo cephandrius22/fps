@@ -8,16 +8,19 @@
 //!   assets/scripts/x.lua            engine
 //!   ────────────────────            ──────
 //!   Counter = {}                    vm.load("scripts/x.lua", source)
-//!   function Counter:on_fire()      vm.instance("Counter", Some("c1"))
+//!   function Counter:on_fire()      vm.instance("Counter", Some("c1"), key)
 //!     self.n = (self.n or 0) + 1    vm.call(&instance, Hook::Fire)
 //!     world.fire("door")   ──────►  vm.drain() → [Command::Fire "door"]
 //!   end
 //! ```
 //!
-//! Lua API: `world.fire(name)`, `world.fire_after(seconds, name)`,
-//! `world.log(text)`, and `print(...)` (logged). `self.name` holds the
-//! entity's name. Hooks: `on_spawn`, `on_fire`, `on_use`, `on_enter`,
-//! `on_tick(dt)`; a missing hook is skipped.
+//! Lua API (see `api.rs`): actions `world.fire`, `world.fire_after`,
+//! `world.open`, `world.close`, `world.log` and `print`; reads
+//! `world.position`, `world.mover`, `world.player` and `world.time`,
+//! answered from the snapshot the engine publishes with
+//! [`Vm::set_view`]. `self.name` holds the entity's name, and `self`
+//! itself works as a target. Hooks: `on_spawn`, `on_fire`, `on_use`,
+//! `on_enter`, `on_tick(dt)`; a missing hook is skipped.
 //!
 //! Sandboxed: no `io`, `os`, `package`/`require`, `dofile` or
 //! `loadfile`, and every load or hook call gets an instruction budget,
@@ -27,11 +30,14 @@
 //! access.
 
 mod api;
+mod view;
 
 use mlua::{HookTriggers, Lua, LuaOptions, RegistryKey, StdLib, Table, Value, VmState};
 
-pub use api::Command;
-use api::{Queue, install_api};
+pub use api::{Command, Target};
+pub use view::{EntityKey, EntityView, MoverPhase, MoverView, WorldView};
+
+use api::{ENTITY_FIELD, Queue, SharedView, install_api};
 
 /// VM instructions one load or hook call may run before it is stopped.
 /// About 10 ms of work: far more than any sane hook needs.
@@ -120,6 +126,7 @@ impl Instance {
 pub struct Vm {
     lua: Lua,
     commands: Queue,
+    view: SharedView,
 }
 
 impl Default for Vm {
@@ -135,9 +142,14 @@ impl Vm {
         let lua = Lua::new_with(libraries(), LuaOptions::default())
             .expect("Lua state with safe standard libraries");
         let commands = Queue::default();
+        let view = SharedView::default();
 
-        install_api(&lua, &commands).expect("install world API into a fresh Lua state");
-        Self { lua, commands }
+        install_api(&lua, &commands, &view).expect("install world API into a fresh Lua state");
+        Self {
+            lua,
+            commands,
+            view,
+        }
     }
 
     /// Runs a script's source, defining or redefining its classes.
@@ -151,9 +163,14 @@ impl Vm {
         })
     }
 
-    /// New instance of `class` with `self.name = name`. Does not call
-    /// `on_spawn`; the caller does, once the entity exists.
-    pub fn instance(&mut self, class: &str, name: Option<&str>) -> Result<Instance, ScriptError> {
+    /// New instance of `class` for entity `key`, with `self.name = name`.
+    /// Does not call `on_spawn`; the caller does, once the entity exists.
+    pub fn instance(
+        &mut self,
+        class: &str,
+        name: Option<&str>,
+        key: EntityKey,
+    ) -> Result<Instance, ScriptError> {
         let unknown = || ScriptError::UnknownClass(class.to_owned());
 
         let defined: Option<Table> = self.lua.globals().get(class).map_err(|_| unknown())?;
@@ -161,7 +178,7 @@ impl Vm {
             return Err(unknown());
         }
 
-        let table = self.new_instance(class, name).map_err(|_| unknown())?;
+        let table = self.new_instance(class, name, key).map_err(|_| unknown())?;
         Ok(Instance {
             table,
             class: class.to_owned(),
@@ -199,6 +216,12 @@ impl Vm {
         matches!(this.get::<Value>(hook.method()), Ok(Value::Function(_)))
     }
 
+    /// Replaces the snapshot `world.*` reads answer from. Call before
+    /// running hooks, so they see the current moment.
+    pub fn set_view(&mut self, view: WorldView) {
+        *self.view.borrow_mut() = view;
+    }
+
     /// Commands queued since the last drain, oldest first.
     pub fn drain(&mut self) -> Vec<Command> {
         std::mem::take(&mut *self.commands.borrow_mut())
@@ -207,9 +230,16 @@ impl Vm {
     /// `{ name = name }` whose missing keys resolve through the global
     /// `class` table at lookup time, so reloading a class updates every
     /// live instance.
-    fn new_instance(&self, class: &str, name: Option<&str>) -> mlua::Result<RegistryKey> {
+    fn new_instance(
+        &self,
+        class: &str,
+        name: Option<&str>,
+        key: EntityKey,
+    ) -> mlua::Result<RegistryKey> {
         let this = self.lua.create_table()?;
         this.set("name", name)?;
+        // The key as Lua's i64, bit for bit; api.rs turns it back.
+        this.set(ENTITY_FIELD, key as i64)?;
 
         let class_name = class.to_owned();
         let index = self
@@ -245,6 +275,8 @@ mod tests {
     use super::*;
 
     const CHUNK: &str = "scripts/test.lua";
+    /// Entity key for instances whose entity does not matter.
+    const KEY: EntityKey = 7;
 
     fn vm(source: &str) -> Vm {
         let mut vm = Vm::new();
@@ -271,8 +303,8 @@ mod tests {
     #[test]
     fn hooks_see_their_own_state_and_name() {
         let mut vm = vm(COUNTER);
-        let a = vm.instance("Counter", Some("a")).unwrap();
-        let b = vm.instance("Counter", Some("b")).unwrap();
+        let a = vm.instance("Counter", Some("a"), KEY).unwrap();
+        let b = vm.instance("Counter", Some("b"), KEY).unwrap();
 
         vm.call(&a, Hook::Spawn).unwrap();
         vm.call(&b, Hook::Spawn).unwrap();
@@ -287,7 +319,7 @@ mod tests {
     #[test]
     fn missing_hooks_are_skipped() {
         let mut vm = vm(COUNTER);
-        let a = vm.instance("Counter", None).unwrap();
+        let a = vm.instance("Counter", None, KEY).unwrap();
 
         vm.call(&a, Hook::Use).unwrap();
         assert!(!vm.has_hook(&a, Hook::Use));
@@ -297,7 +329,7 @@ mod tests {
     #[test]
     fn unknown_class_is_an_error() {
         let mut vm = vm(COUNTER);
-        let err = vm.instance("Nope", None).unwrap_err();
+        let err = vm.instance("Nope", None, KEY).unwrap_err();
 
         assert!(matches!(err, ScriptError::UnknownClass(ref c) if c == "Nope"));
     }
@@ -313,7 +345,7 @@ mod tests {
                 world.fire_after(-1, "clamped")
             end
         "#);
-        let talker = vm.instance("Talker", None).unwrap();
+        let talker = vm.instance("Talker", None, KEY).unwrap();
 
         vm.call(&talker, Hook::Use).unwrap();
 
@@ -338,7 +370,7 @@ mod tests {
             Clock = {}
             function Clock:on_tick(dt) world.log(tostring(dt)) end
         "#);
-        let clock = vm.instance("Clock", None).unwrap();
+        let clock = vm.instance("Clock", None, KEY).unwrap();
 
         vm.call(&clock, Hook::Tick { dt: 0.5 }).unwrap();
         assert_eq!(vm.drain(), [Command::Log("0.5".into())]);
@@ -347,7 +379,7 @@ mod tests {
     #[test]
     fn reload_changes_behavior_but_keeps_state() {
         let mut vm = vm(COUNTER);
-        let a = vm.instance("Counter", Some("a")).unwrap();
+        let a = vm.instance("Counter", Some("a"), KEY).unwrap();
         vm.call(&a, Hook::Spawn).unwrap();
         vm.call(&a, Hook::Fire).unwrap();
 
@@ -366,7 +398,7 @@ mod tests {
 
         vm.load(CHUNK, "Bad = {} function Bad:on_use() error('boom') end")
             .unwrap();
-        let bad = vm.instance("Bad", None).unwrap();
+        let bad = vm.instance("Bad", None, KEY).unwrap();
         let err = vm.call(&bad, Hook::Use).unwrap_err();
         assert!(matches!(err, ScriptError::Hook { hook: "on_use", .. }));
         assert!(err.to_string().contains("boom"), "{err}");
@@ -375,7 +407,7 @@ mod tests {
     #[test]
     fn runaway_loops_are_stopped() {
         let mut vm = vm("Spin = {} function Spin:on_tick() while true do end end");
-        let spin = vm.instance("Spin", None).unwrap();
+        let spin = vm.instance("Spin", None, KEY).unwrap();
 
         let err = vm.call(&spin, Hook::Tick { dt: 0.1 }).unwrap_err();
         assert!(err.to_string().contains("instructions"), "{err}");
@@ -395,5 +427,91 @@ mod tests {
         "#;
 
         vm.load(CHUNK, probe).unwrap();
+    }
+
+    fn door_view() -> WorldView {
+        WorldView {
+            entities: vec![EntityView {
+                key: KEY,
+                name: Some("door".into()),
+                position: [1.0, 2.0, 3.0],
+                mover: Some(MoverView {
+                    phase: MoverPhase::Opening,
+                    progress: 0.5,
+                }),
+            }],
+            player: Some([4.0, 0.0, -6.0]),
+            time: 12.5,
+        }
+    }
+
+    /// Runs `body` as `Probe:on_use()` on an instance of entity KEY and
+    /// returns what it logged.
+    fn probe(view: WorldView, body: &str) -> Vec<Command> {
+        let mut vm = vm(&format!("Probe = {{}} function Probe:on_use() {body} end"));
+        vm.set_view(view);
+        let probe = vm.instance("Probe", None, KEY).unwrap();
+
+        vm.call(&probe, Hook::Use).unwrap();
+        vm.drain()
+    }
+
+    fn logged(text: &str) -> Vec<Command> {
+        vec![Command::Log(text.into())]
+    }
+
+    #[test]
+    fn reads_positions_by_name_or_self() {
+        let by_name = "local p = world.position('door') print(p.x, p.y, p.z)";
+        assert_eq!(probe(door_view(), by_name), logged("1.0\t2.0\t3.0"));
+
+        let by_self = "print(world.position(self).z)";
+        assert_eq!(probe(door_view(), by_self), logged("3.0"));
+    }
+
+    #[test]
+    fn reads_mover_state_player_and_time() {
+        let body = "local m = world.mover('door') print(m.state, m.progress, world.player().z, world.time())";
+        assert_eq!(probe(door_view(), body), logged("opening\t0.5\t-6.0\t12.5"));
+    }
+
+    #[test]
+    fn missing_things_read_as_nil() {
+        let body = "print(world.position('nobody'), world.mover('nobody'), world.player())";
+        let empty = WorldView::default();
+
+        assert_eq!(probe(empty, body), logged("nil\tnil\tnil"));
+    }
+
+    #[test]
+    fn open_and_close_queue_commands_for_names_and_self() {
+        let commands = probe(door_view(), "world.open('door') world.close(self)");
+
+        assert_eq!(
+            commands,
+            [
+                Command::Open(Target::Name("door".into())),
+                Command::Close(Target::Entity(KEY)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bad_target_is_a_script_error() {
+        let mut vm = vm("Bad = {} function Bad:on_use() world.open(42) end");
+        let bad = vm.instance("Bad", None, KEY).unwrap();
+
+        let err = vm.call(&bad, Hook::Use).unwrap_err();
+        assert!(err.to_string().contains("entity name or self"), "{err}");
+    }
+
+    #[test]
+    fn keys_survive_the_trip_through_lua() {
+        let key = EntityKey::MAX - 1;
+        let mut vm = vm("K = {} function K:on_use() world.close(self) end");
+        let k = vm.instance("K", None, key).unwrap();
+
+        vm.call(&k, Hook::Use).unwrap();
+        assert_eq!(vm.drain(), [Command::Close(Target::Entity(key))]);
     }
 }

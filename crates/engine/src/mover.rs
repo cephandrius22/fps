@@ -33,6 +33,15 @@ enum Motion {
     Closing,
 }
 
+/// Where a mover is in its cycle, as reported outside this module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Phase {
+    Closed,
+    Opening,
+    Open,
+    Closing,
+}
+
 /// What a moving body may not push into this tick.
 pub(crate) struct Obstacles<'a> {
     pub physics: &'a mut physics::World,
@@ -65,6 +74,36 @@ impl MoverState {
             Motion::Open { .. } if close == Close::OnFire => Motion::Closing,
             other => other,
         };
+    }
+
+    /// Opens, whatever the state: closed or closing movers start opening;
+    /// an open one restarts its wait before closing.
+    pub fn open(&mut self) {
+        self.motion = match self.motion {
+            Motion::Open { .. } => Motion::Open { elapsed: 0.0 },
+            _ => Motion::Opening,
+        };
+    }
+
+    /// Closes, whatever the state: open or opening movers start closing.
+    pub fn close(&mut self) {
+        if matches!(self.motion, Motion::Open { .. } | Motion::Opening) {
+            self.motion = Motion::Closing;
+        }
+    }
+
+    pub fn phase(&self) -> Phase {
+        match self.motion {
+            Motion::Closed => Phase::Closed,
+            Motion::Opening => Phase::Opening,
+            Motion::Open { .. } => Phase::Open,
+            Motion::Closing => Phase::Closing,
+        }
+    }
+
+    /// 0 at spawn, 1 fully open.
+    pub fn progress(&self) -> f32 {
+        self.progress
     }
 
     /// Advances by `dt`, moving `bodies` along. A step that would push
@@ -243,6 +282,41 @@ mod tests {
         assert_eq!(run(&mut state, &mover, 5.0), None);
         state.fire(mover.close);
         assert_eq!(run(&mut state, &mover, 1.5), Some(Vec3::ZERO));
+    }
+
+    #[test]
+    fn open_and_close_override_the_cycle() {
+        let mover = lift(Close::OnFire);
+        let mut state = MoverState::new(Vec3::ZERO);
+
+        // Closing a closed mover does nothing; open starts it.
+        state.close();
+        assert_eq!(state.phase(), Phase::Closed);
+        state.open();
+        run(&mut state, &mover, 0.5);
+        assert_eq!(state.phase(), Phase::Opening);
+
+        // Close mid-way: it turns back from where it is.
+        let halfway = state.progress();
+        state.close();
+        run(&mut state, &mover, 0.2);
+        assert_eq!(state.phase(), Phase::Closing);
+        assert!(state.progress() < halfway);
+    }
+
+    #[test]
+    fn open_on_an_open_timed_mover_restarts_its_wait() {
+        let mover = lift(Close::After(1.0));
+        let mut state = MoverState::new(Vec3::ZERO);
+        state.open();
+        run(&mut state, &mover, 1.5);
+
+        // 0.5 s into a 1 s wait: reopening buys another full second.
+        state.open();
+        run(&mut state, &mover, 0.8);
+        assert_eq!(state.phase(), Phase::Open);
+        run(&mut state, &mover, 0.5);
+        assert_eq!(state.phase(), Phase::Closing);
     }
 
     #[test]

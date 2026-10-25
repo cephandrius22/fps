@@ -417,10 +417,27 @@ mod tests {
     const SCRIPT_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets/scripts/sandbox.lua");
     const DT: f32 = 1.0 / 60.0;
 
-    fn run(world: &mut World, seconds: f32) {
+    /// Ticks `seconds`; `player` is the body triggers and scripts see.
+    fn run(world: &mut World, seconds: f32, player: Option<Aabb>) {
         for _ in 0..(seconds / DT).round() as u32 {
-            world.tick(DT, None);
+            world.tick(DT, player);
         }
+    }
+
+    /// A player body standing at `(x, z)`.
+    fn player_at(x: f32, z: f32) -> Option<Aabb> {
+        Some(Aabb::from_center(Vec3::new(x, HALF.y + 0.01, z), HALF))
+    }
+
+    /// Eye in front of the secret button, looking at it.
+    const BUTTON_EYE: Vec3 = Vec3::new(0.0, 1.25, ROOM_MIN.z + 1.0);
+
+    /// True when a box can pass through the secret opening.
+    fn secret_open(world: &World) -> bool {
+        let z = (SECRET_Z.0 + SECRET_Z.1) / 2.0;
+        let inside = Vec3::new(ROOM_MIN.x + 1.0, 1.0, z);
+        let outside = Vec3::new(ROOM_MIN.x - 2.0, 1.0, z);
+        !world.trace(inside, outside, HALF * 0.5).hit()
     }
 
     /// Normal of whatever is straight below `(x, z)`.
@@ -480,23 +497,39 @@ mod tests {
     #[test]
     fn secret_button_opens_the_panel_on_the_third_press() {
         let mut world = collision_only();
-        let eye = Vec3::new(0.0, 1.25, ROOM_MIN.z + 1.0);
-        let through_opening = |world: &World| {
-            let z = (SECRET_Z.0 + SECRET_Z.1) / 2.0;
-            let inside = Vec3::new(ROOM_MIN.x + 1.0, 1.0, z);
-            let outside = Vec3::new(ROOM_MIN.x - 2.0, 1.0, z);
-            !world.trace(inside, outside, HALF * 0.5).hit()
-        };
 
         for _ in 0..2 {
-            assert!(world.use_from(eye, Vec3::NEG_Z));
-            run(&mut world, 3.0);
+            assert!(world.use_from(BUTTON_EYE, Vec3::NEG_Z));
+            run(&mut world, 3.0, None);
         }
-        assert!(!through_opening(&world), "opened early");
+        assert!(!secret_open(&world), "opened early");
 
-        assert!(world.use_from(eye, Vec3::NEG_Z));
-        run(&mut world, 3.0);
-        assert!(through_opening(&world));
+        assert!(world.use_from(BUTTON_EYE, Vec3::NEG_Z));
+        run(&mut world, 3.0, None);
+        assert!(secret_open(&world));
+    }
+
+    #[test]
+    fn secret_panel_shuts_behind_a_wandering_player_and_reopens() {
+        let mut world = collision_only();
+        for _ in 0..3 {
+            world.use_from(BUTTON_EYE, Vec3::NEG_Z);
+            run(&mut world, 3.0, None);
+        }
+
+        // Standing in the room by the panel: it stays open.
+        let near = player_at(ROOM_MIN.x + 1.0, SECRET_Z.0 + 1.0);
+        run(&mut world, 1.0, near);
+        assert!(secret_open(&world), "closed on a nearby player");
+
+        // Back at the spawn, 20 m away: it shuts.
+        run(&mut world, 3.0, player_at(SPAWN.x, SPAWN.z));
+        assert!(!secret_open(&world), "still open behind the player");
+
+        // Found once, one press reopens it.
+        assert!(world.use_from(BUTTON_EYE, Vec3::NEG_Z));
+        run(&mut world, 3.0, None);
+        assert!(secret_open(&world));
     }
 
     #[test]

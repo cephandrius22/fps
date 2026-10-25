@@ -13,6 +13,22 @@ pub struct SlotId {
     generation: u32,
 }
 
+impl SlotId {
+    /// The handle packed into a u64, e.g. to pass through a script.
+    /// Opaque: only [`SlotId::from_bits`] should read it.
+    pub fn to_bits(self) -> u64 {
+        (u64::from(self.generation) << 32) | u64::from(self.index)
+    }
+
+    /// Unpacks [`SlotId::to_bits`]. Garbage gives a handle that misses.
+    pub fn from_bits(bits: u64) -> Self {
+        Self {
+            index: bits as u32,
+            generation: (bits >> 32) as u32,
+        }
+    }
+}
+
 struct Entry<T> {
     generation: u32,
     value: Option<T>,
@@ -135,6 +151,19 @@ impl<T> Slots<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handles_round_trip_through_bits() {
+        let mut slots = Slots::default();
+        slots.insert("a");
+        let b = slots.insert("b");
+        slots.remove(b);
+        let c = slots.insert("c");
+
+        let back = SlotId::from_bits(c.to_bits());
+        assert_eq!(back, c);
+        assert_eq!(slots.get(back), Some(&"c"));
+    }
 
     #[test]
     fn iter_skips_removed_slots_and_yields_live_handles() {

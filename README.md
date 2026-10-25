@@ -5,7 +5,7 @@ low internal resolution, chunky nearest-neighbor pixels, a hand-written
 renderer. The look is a setting, not a limit, so the engine can grow past it.
 
 **Status:** Phases 1 (first world) and 2 (walking around) of
-[retro-fps-engine-plan.md](retro-fps-engine-plan.md) are well along:
+[retro-fps-engine-plan.md](retro-fps-engine-plan.md) are done:
 a Quake map loader, brush collision, a character controller, entities
 and Lua scripting all work. The sandbox is a
 small brush-built level you walk through: stairs, a walkable and a
@@ -72,8 +72,9 @@ backs off. Walking into the room's front strip (just inside the door)
 opens it again from inside. The button on the room's back wall runs
 `SecretButton` in `assets/scripts/sandbox.lua`: the first two presses
 log "Click. N more.", the third logs a grinding sound and the panel in
-the room's west wall sinks into the floor for good. Script messages go
-to the terminal log. Steps up to 45 cm climb on their own; slopes
+the room's west wall sinks into the floor. Walk more than 6 m from the
+open panel and it slides shut behind you; once found, one press
+reopens it. Script messages go to the terminal log. Steps up to 45 cm climb on their own; slopes
 steeper than about 45° are walls.
 
 While it runs, edit `assets/shaders/*.wgsl`, `assets/textures/*.png`,
@@ -142,7 +143,7 @@ Dependency rules:
   `engine::Fog`, `engine::Quantize`, `engine::Brush`, `engine::Trace`
   and `engine::CursorMode`. `engine/src/gfx.rs` is the only place they are
   converted to `render` types, `engine/src/collision.rs` the only place
-  for `physics` types, `engine/src/world.rs` the only user of `script`,
+  for `physics` types, `engine/src/world/scripting.rs` the only user of `script`,
   and `engine/src/map/` the only user of `bsp`, so lower-layer
   internals can change without breaking games.
 - `base` has no knowledge of windows, GPUs or game rules. Shared vocabulary
@@ -248,12 +249,19 @@ engine App::frame
   a Lua class: a global table in `assets/scripts/*.lua`. Each entity
   gets its own instance (`self`), and its hooks run on events:
   `on_spawn`, `on_fire`, `on_use`, `on_enter`, `on_tick(dt)`. Scripts
-  act through `world.fire(name)`, `world.fire_after(seconds, name)` and
-  `world.log(text)` (or `print`). They cannot read files or the OS, and a
-  hook running past a million Lua instructions is stopped with an error.
-  A failing script is logged, never fatal. Saving a script reloads it:
-  classes update and every entity keeps its state. Scripts cannot read
-  world state yet (positions, the player); that is the next step.
+  act through `world.fire(name)`, `world.fire_after(seconds, name)`,
+  `world.open(target)` / `world.close(target)` (drive a mover directly,
+  whatever its state) and `world.log(text)` (or `print`). They read
+  through `world.position(target)` (`{x, y, z}`: the middle of the
+  entity's solid shape, or its origin), `world.mover(target)`
+  (`{state = "open", progress = 1}`), `world.player()` (feet position,
+  nil while flying) and `world.time()`. A target is a name or `self`.
+  Reads come from a snapshot the engine publishes before hooks run, and
+  actions are applied after, so Lua never holds engine references. They
+  cannot read files or the OS, and a hook running past a million Lua
+  instructions is stopped with an error. A failing script is logged,
+  never fatal. Saving a script reloads it: classes update and every
+  entity keeps its state.
 - **Maps.** `gfx.load_map("maps/test.bsp", world)` reads a Quake BSP
   (BSP29 or BSP2) and spawns it: per-texture meshes from its faces,
   collision from its BSPX brush list (so compile with `qbsp
@@ -319,14 +327,14 @@ cargo test
 |---|---|
 | `base` | unit tests: slots, Vfs, watcher, image validation, PNG decode (all color types) and round-trip, mip downsampling (linear-light average, odd sizes), error chains |
 | `platform` | unit tests: clock math (injected time), key/button mapping, cursor grab fallback order |
-| `script` | unit tests: hooks with per-instance state and names, missing hooks skipped, unknown classes rejected, every `world.*` command and `print`, reload keeping state, error messages naming the file or hook, runaway loops stopped, no io/os/file access |
+| `script` | unit tests: hooks with per-instance state and names, missing hooks skipped, unknown classes rejected, every `world.*` command and `print`, reads by name and by `self` (position, mover state, player, time, nil when missing), open/close targets, bad targets rejected, entity keys surviving the trip through Lua, reload keeping state, error messages naming the file or hook, runaway loops stopped, no io/os/file access |
 | `bsp` | unit tests: header and lump bounds, record sizes, the cursor, entity text (pairs, repeats, model indices, errors with line numbers), contents, missing textures, garbage input, luxel grids (snapping, negative texels), texel precision, Newell winding; `tests/test_map.rs` reads the committed test map: version, textures and sizes, models, entities, counter-clockwise faces, the floor, BRUSHLIST brushes, lightmaps that tile the lighting lump exactly, lightmap coordinates inside their grids |
 | `physics` | unit tests: brush construction (planes, bevels, faces, winding), box and ray traces (fractions, normals, start-solid), slide along walls and into corners, step up and down, ground detection, snap down |
 | `render` | unit tests: camera, letterbox, vertex and uniform layouts, fog encoding, mip chain sizes, palette loading, readback padding, GPU-test skip policy |
 | `render` GPU | `tests/headless.rs`: renders offscreen and checks pixels (culling, depth, shader reload, texture mapping, nearest filtering, texture replace/destroy/size limit, mipmaps, fog curves and background, palette quantization, dither pattern, lightmap brightness and lightmap UVs) |
 | shaders | `tests/shaders.rs`: naga validates every shipped `.wgsl` (no GPU needed) |
-| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach; scripts relaying fires, spawn/use/enter/tick hooks, delayed fires, the per-tick fire cap), shipped scripts load, brush meshes, map conversion (axes and handedness, planes, yaw, bounds, door travel and trigger fields, player start, malformed keys), multi-brush doors, `World::find`, lightmap atlas packing (no overlaps, luxels in place, power-of-two width), reference-image tolerances, asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload, and for the real test map (start and title, solid floor, button opens door 1, door 2 opens on approach, a walker climbs its stairs, and the view from the start against the reference image `crates/engine/reference/test-map.png`) |
-| `game` | cube geometry; level layout (spawn is clear, ramp slopes, stair rises, door seals and hides); the scripted secret button with the real `sandbox.lua` (opens on the third press only); landing from flight needs room; profile and palette cycling |
+| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach; scripts relaying fires, spawn/use/enter/tick hooks, delayed fires, the per-tick fire cap; scripts reading the player, positions, mover state and time, and driving movers by name and `self`), mover open/close overrides, shipped scripts load, brush meshes, map conversion (axes and handedness, planes, yaw, bounds, door travel and trigger fields, player start, malformed keys), multi-brush doors, `World::find`, lightmap atlas packing (no overlaps, luxels in place, power-of-two width), reference-image tolerances, asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload, and for the real test map (start and title, solid floor, button opens door 1, door 2 opens on approach, a walker climbs its stairs, and the view from the start against the reference image `crates/engine/reference/test-map.png`) |
+| `game` | cube geometry; level layout (spawn is clear, ramp slopes, stair rises, door seals and hides); the scripted secret button with the real `sandbox.lua` (opens on the third press only; shuts behind a player who walks away, reopens with one press); landing from flight needs room; profile and palette cycling |
 
 The reference-image test compares within GPU-to-GPU tolerances (a
 channel within 24 levels, at most 1% of pixels off, mean difference ≤ 3),
@@ -366,6 +374,7 @@ To move to a newer Rust: change `channel` in `rust-toolchain.toml`, run
 See [retro-fps-engine-plan.md](retro-fps-engine-plan.md). It starts with a
 status section: what is implemented and where each phase stands. Phase 1
 is done: BSP maps with baked lightmaps, checked by a reference-image
-test of the test map. Phase 2 has collision, the walker, entities (spawned in code
-or from maps) with doors, buttons and triggers, and the start of Lua
-scripting.
+test of the test map. Phase 2 is done too: collision, the walker,
+entities (spawned in code or from maps) with doors, buttons and
+triggers, and Lua scripts that read the world and drive movers. Next is
+Phase 3, the engine's own toolchain.
