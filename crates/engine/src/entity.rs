@@ -75,6 +75,9 @@ pub struct Model {
     pub mesh: MeshHandle,
     /// Texture; None draws vertex colors only.
     pub texture: Option<TextureHandle>,
+    /// Baked light, read at the mesh's lightmap UVs; None lights with
+    /// the fixed sun term.
+    pub lightmap: Option<TextureHandle>,
 }
 
 /// Slides the entity from its spawn position to `spawn + travel` when

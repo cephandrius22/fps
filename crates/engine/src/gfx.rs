@@ -318,6 +318,13 @@ impl Gfx<'_> {
         Ok(TextureHandle(self.renderer.create_texture(image)?))
     }
 
+    /// Uploads baked light for [`Frame::draw_lit`]: gray, sRGB-encoded,
+    /// Quake overbright (128 = full texture brightness), opaque. Sampled
+    /// smoothly between luxels.
+    pub fn create_lightmap(&mut self, image: &Image) -> Result<TextureHandle, EngineError> {
+        Ok(TextureHandle(self.renderer.create_lightmap(image)?))
+    }
+
     /// Frees a texture and stops watching its file. Destroying twice is a
     /// bug (flagged by `verify!`).
     pub fn destroy_texture(&mut self, texture: TextureHandle) {
@@ -378,20 +385,40 @@ impl Frame {
         self.draws.clear();
     }
 
-    /// Queues `mesh` with object → world transform `model`.
+    /// Queues `mesh` with object → world transform `model`, lit by the
+    /// fixed sun term.
     pub fn draw_mesh(&mut self, mesh: MeshHandle, model: Mat4) {
-        self.draws.push(Draw {
-            mesh: mesh.0,
-            texture: None,
-            model,
-        });
+        self.push(mesh, None, None, model);
     }
 
     /// Queues `mesh` with `texture` (multiplied by vertex color).
     pub fn draw_textured(&mut self, mesh: MeshHandle, texture: TextureHandle, model: Mat4) {
+        self.push(mesh, Some(texture), None, model);
+    }
+
+    /// Queues `mesh` lit by `lightmap` (from [`Gfx::create_lightmap`]) at
+    /// each vertex's `lightmap_uv`, instead of the sun term.
+    pub fn draw_lit(
+        &mut self,
+        mesh: MeshHandle,
+        texture: Option<TextureHandle>,
+        lightmap: TextureHandle,
+        model: Mat4,
+    ) {
+        self.push(mesh, texture, Some(lightmap), model);
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        mesh: MeshHandle,
+        texture: Option<TextureHandle>,
+        lightmap: Option<TextureHandle>,
+        model: Mat4,
+    ) {
         self.draws.push(Draw {
             mesh: mesh.0,
-            texture: Some(texture.0),
+            texture: texture.map(|t| t.0),
+            lightmap: lightmap.map(|l| l.0),
             model,
         });
     }

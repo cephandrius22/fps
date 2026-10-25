@@ -13,6 +13,7 @@
 
 mod app;
 mod assets;
+mod atlas;
 mod collision;
 mod debug;
 mod entity;

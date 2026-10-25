@@ -92,6 +92,7 @@ fn at(mesh: MeshId, model: Mat4) -> Draw {
     Draw {
         mesh,
         texture: None,
+        lightmap: None,
         model,
     }
 }
@@ -100,8 +101,22 @@ fn textured(mesh: MeshId, texture: TextureId) -> Draw {
     Draw {
         mesh,
         texture: Some(texture),
+        lightmap: None,
         model: Mat4::IDENTITY,
     }
+}
+
+fn lit(mesh: MeshId, lightmap: TextureId) -> Draw {
+    Draw {
+        lightmap: Some(lightmap),
+        ..at(mesh, Mat4::IDENTITY)
+    }
+}
+
+/// Lightmap of gray luxels in a row, opaque.
+fn luxels(values: &[u8]) -> Image {
+    let rgba = values.iter().flat_map(|&v| [v, v, v, 255]).collect();
+    Image::new(values.len() as u32, 1, rgba).unwrap()
 }
 
 /// 2×2 texture: red, green on top; blue, white below.
@@ -512,4 +527,38 @@ fn bad_post_shader_is_rejected() {
 
     let err = r.reload_shader(Shader::Post, "fn broken(").unwrap_err();
     assert!(matches!(err, RenderError::Validation { .. }), "{err:?}");
+}
+
+/// Quake overbright: luxel 128 is full texture brightness, whatever the
+/// sun term would have said.
+#[test]
+fn lightmap_value_128_is_full_brightness() {
+    let Some(mut r) = renderer() else {
+        return;
+    };
+    let mesh = r.create_mesh(&common::lit_quad(WHITE));
+    let lightmap = r.create_lightmap(&luxels(&[128])).unwrap();
+
+    let px = center(&draw(&mut r, &[lit(mesh, lightmap)]));
+    assert!(px[..3].iter().all(|&c| c >= 250), "{px:?}");
+}
+
+/// Four luxels across the quad, dark, dark, bright, bright: each half
+/// takes its own pair's light, blending only near the middle. (Pairs,
+/// because a single luxel per half would blend toward the other a little
+/// at any off-center sample, and near black that shows.)
+#[test]
+fn lightmap_follows_lightmap_uvs() {
+    let Some(mut r) = renderer() else {
+        return;
+    };
+    let mesh = r.create_mesh(&common::lit_quad(WHITE));
+    let lightmap = r.create_lightmap(&luxels(&[0, 0, 128, 128])).unwrap();
+
+    let shot = draw(&mut r, &[lit(mesh, lightmap)]);
+    let left = shot.pixel(CENTER.0 - QUADRANT, CENTER.1).unwrap();
+    let right = shot.pixel(CENTER.0 + QUADRANT, CENTER.1).unwrap();
+
+    assert!(left[0] < 20, "dark luxel: {left:?}");
+    assert!(right[0] > 240, "bright luxel: {right:?}");
 }

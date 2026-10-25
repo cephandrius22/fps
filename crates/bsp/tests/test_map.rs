@@ -6,9 +6,14 @@ use glam::Vec3;
 
 const EPS: f32 = 1e-3;
 
+const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/maps/test.bsp");
+/// Directory entry of the lighting lump: after the version, 8 × 8 bytes.
+const LIGHTING_ENTRY: usize = 4 + 8 * 8;
+/// ericw-tools aligns each face's lightmap to this many bytes.
+const LIGHTMAP_ALIGN: usize = 4;
+
 fn test_map() -> Bsp {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/maps/test.bsp");
-    bsp::parse(&std::fs::read(path).unwrap()).unwrap()
+    bsp::parse(&std::fs::read(PATH).unwrap()).unwrap()
 }
 
 #[test]
@@ -106,4 +111,66 @@ fn brush_list_covers_world_and_entities() {
     assert_eq!(brush.planes.len(), 6);
     assert_eq!(brush.planes[0].dist, brush.maxs.x);
     assert_eq!(brush.planes[1].dist, -brush.mins.x);
+}
+
+#[test]
+fn lightmaps_tile_the_lighting_lump_exactly() {
+    // ericw-tools packs lightmaps back to back, each starting on a
+    // 4-byte boundary. If every face's luxel grid matches the one `light`
+    // used, their padded sizes sum to the lump exactly.
+    let bytes = std::fs::read(PATH).unwrap();
+    let entry = &bytes[LIGHTING_ENTRY..LIGHTING_ENTRY + 8];
+    let lump_len = u32::from_le_bytes(entry[4..8].try_into().unwrap()) as usize;
+
+    let map = test_map();
+    let lightmaps: Vec<_> = map
+        .models
+        .iter()
+        .flat_map(|m| &m.faces)
+        .filter_map(|f| f.lightmap.as_ref())
+        .collect();
+    let total: usize = lightmaps
+        .iter()
+        .map(|l| l.luxels.len().next_multiple_of(LIGHTMAP_ALIGN))
+        .sum();
+
+    assert!(!lightmaps.is_empty());
+    assert_eq!(total, lump_len);
+}
+
+#[test]
+fn lightmap_coords_stay_inside_their_grid() {
+    let map = test_map();
+
+    for face in map.models.iter().flat_map(|m| &m.faces) {
+        let Some(lightmap) = &face.lightmap else {
+            continue;
+        };
+        assert_eq!(lightmap.coords.len(), face.points.len());
+        assert_eq!(
+            lightmap.luxels.len(),
+            (lightmap.width * lightmap.height) as usize
+        );
+
+        // Corners fall between the first and last luxel centers.
+        let max = glam::Vec2::new(lightmap.width as f32, lightmap.height as f32) - 0.5;
+        for c in &lightmap.coords {
+            assert!(c.x >= 0.5 - EPS && c.y >= 0.5 - EPS, "{c:?}");
+            assert!(c.x <= max.x + EPS && c.y <= max.y + EPS, "{c:?} of {max:?}");
+        }
+    }
+}
+
+#[test]
+fn lit_rooms_are_bright_somewhere() {
+    let brightest = test_map()
+        .models
+        .iter()
+        .flat_map(|m| &m.faces)
+        .filter_map(|f| f.lightmap.as_ref())
+        .flat_map(|l| l.luxels.iter().copied())
+        .max()
+        .unwrap();
+
+    assert!(brightest > 100, "brightest luxel {brightest}");
 }

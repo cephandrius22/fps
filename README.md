@@ -86,6 +86,7 @@ version stays active.
 | `ENGINE_ASSETS=<dir>` | Use this asset directory instead of searching upward for `assets/` |
 | `ENGINE_CAPTURE_FRAME=<n>` | Save frame *n* to `screenshots/frame-<n>.png`, then exit |
 | `REQUIRE_GPU=1` | Make GPU tests fail, instead of skip, when no GPU is found |
+| `UPDATE_REFERENCE=1` | Rewrite reference images (`crates/engine/reference/*.png`) from the current render instead of comparing |
 
 ## Repository layout
 
@@ -260,7 +261,10 @@ engine App::frame
   (returned as `MapInfo::start`). Any entity's "script" key names its
   Lua class. Textures come from `textures/<name>.png`, the same files
   qbsp read sizes from, so the .bsp holds no pixels. Not yet:
-  lightmaps, button travel, linked doors, map hot reload.
+  colored or switchable lights, button travel, linked doors, map hot
+  reload. Baked light (L1): every face's lightmap is packed into one
+  atlas (`engine/src/atlas.rs`) and drawn bilinear with Quake's 2×
+  overbright; faces light never reached sample a black luxel.
 - **Cameras.** `engine::FlyCamera` is a ready-made free-flying camera
   (no collision). Update it in `tick`, read it in `draw` with
   `camera(frame.alpha)` so motion is smooth at any frame rate. Mouse look
@@ -349,7 +353,7 @@ To move to a newer Rust: change `channel` in `rust-toolchain.toml`, run
 
 See [retro-fps-engine-plan.md](retro-fps-engine-plan.md). It starts with a
 status section: what is implemented and where each phase stands. Phase 1
-has its BSP map loader; lightmaps and a reference-image test of a map
-come next. Phase 2 has collision, the walker, entities (spawned in code
+is done: BSP maps with baked lightmaps, checked by a reference-image
+test of the test map. Phase 2 has collision, the walker, entities (spawned in code
 or from maps) with doors, buttons and triggers, and the start of Lua
 scripting.

@@ -45,7 +45,7 @@ use mesh::MeshStore;
 use passes::{BlitPass, MeshPass, PostPass};
 use swapchain::Swapchain;
 use target::{COLOR_FORMAT, LowRes};
-use texture::TextureStore;
+use texture::{TextureKind, TextureStore};
 
 /// Shader programs the renderer needs. The caller decides where their
 /// source lives (see [`Renderer::new`]).
@@ -174,6 +174,9 @@ pub struct Draw {
     pub mesh: MeshId,
     /// Texture, multiplied with vertex color. None draws untextured.
     pub texture: Option<TextureId>,
+    /// Baked light from [`Renderer::create_lightmap`], read at each
+    /// vertex's `lightmap_uv`. None lights with the fixed sun term.
+    pub lightmap: Option<TextureId>,
     /// Object → world transform.
     pub model: glam::Mat4,
 }
@@ -302,8 +305,24 @@ impl Renderer {
 
     /// Uploads an sRGB RGBA8 image. Sampled nearest-neighbor, repeating.
     pub fn create_texture(&mut self, image: &Image) -> Result<TextureId> {
-        self.textures
-            .create(&self.gpu.device, &self.gpu.queue, image)
+        self.textures.create(
+            &self.gpu.device,
+            &self.gpu.queue,
+            image,
+            TextureKind::Albedo,
+        )
+    }
+
+    /// Uploads a lightmap: sRGB-encoded brightness, Quake-style overbright
+    /// (128 = full texture brightness, 255 about twice). Alpha must be
+    /// 255. Sampled bilinear, clamped, without mips.
+    pub fn create_lightmap(&mut self, image: &Image) -> Result<TextureId> {
+        self.textures.create(
+            &self.gpu.device,
+            &self.gpu.queue,
+            image,
+            TextureKind::Lightmap,
+        )
     }
 
     /// Replaces a texture's pixels (any size) in place; the handle and

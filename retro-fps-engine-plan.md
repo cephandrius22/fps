@@ -16,7 +16,7 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 |---|---|---|
 | 0 — Foundations | Window, loop, GPU, low-res cube | ✅ Done |
 | 0.5 — Follow-ups | Code-health items found in review | ✅ Done (optional renames skipped) |
-| 1 — First world | Fly through a lit, fogged BSP level | 🟡 In progress: 6 of 8 items done; lightmaps and the reference-image test left |
+| 1 — First world | Fly through a lit, fogged BSP level | ✅ Done (lightmaps and reference-image test added 2026-10-25) |
 | 2 — Walking around | Collision, character controller, entities, Lua | 🟡 In progress: all 4 items working, including map entities; Lua is a first slice |
 | 3 — Own toolchain | `mapc`, lightmap baker, glTF props | Not started |
 | 4 — Dynamic lighting and atmosphere | Dynamic lights, flashlight shadows, fog volumes, 3D audio | Not started |
@@ -299,8 +299,8 @@ Found in review. Each is cheaper now than once Phase 1 builds on top of it.
 - ✅ Distance fog (F0): `frame.fog`, linear / exp / exp², background in the fog color.
 - ✅ Retro post-pass: palette quantization and ordered dither (`frame.quantize`: off, nearest, dithered). Its own low-res pass (`post.wgsl`) rather than inside `blit.wgsl`, so captures and headless tests see it and the dither stays on low-res pixels. Default 256-color palette in `assets/palettes/default.png`.
 - ✅ Load a map: ericw-tools BSP loader as the shortcut. `crates/bsp` reads BSP29/BSP2 plus the BSPX BRUSHLIST (qbsp `-wrbrushes`), so the engine collides with the map's real brushes instead of Quake's three fixed hulls. `engine::Gfx::load_map` spawns the same `Brush`es and `Entity`s the sandbox uses, so collision, the walker, doors and scripts work on maps unchanged. Test map `maps/test.map` (three rooms, two doors, a button, triggers, stairs, a scripted trigger) is compiled with `tools/compile-map.sh` and committed as `assets/maps/test.bsp`; `cargo run -p game -- maps/test.bsp` plays it. Textures are `assets/textures/<name>.png` by name: qbsp `-notex -path assets` reads their sizes, and the .bsp holds no pixels. Not yet: button travel, linked doors, door spawnflags, map hot reload.
-- Baked lightmaps (L1). The vertex format already has `lightmap_uv`.
-- Add a reference-image test: capture a known view of a test map and compare it against a stored PNG.
+- ✅ Baked lightmaps (L1): style-0 grayscale lightmaps read per face (sizes match ericw `light` exactly; a test checks they tile the lump), packed into one atlas, drawn bilinear with 2× overbright. Faces no light reached draw black. Not yet: colored (RGBLIGHTING/.lit), switchable styles, LMSHIFT.
+- ✅ Reference-image test: the test map from its start, 320×180, no fog or palette, against `crates/engine/reference/test-map.png` with GPU-tolerant thresholds; `UPDATE_REFERENCE=1` rewrites it.
 - **Milestone:** fly through a lit, fogged TrenchBroom level that looks like 1997.
 
 ### Phase 2 — Walking around (2–4 weeks) — in progress

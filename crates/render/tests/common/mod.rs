@@ -43,6 +43,15 @@ pub fn renderer_with(mipmaps: Mipmaps) -> Option<GpuTest> {
     render::test_support::headless_or_skip(config, load_shader)
 }
 
+/// `quad`, with lightmap UVs equal to its texture UVs.
+pub fn lit_quad(color: [f32; 4]) -> MeshData {
+    let mut mesh = quad(color);
+    for v in &mut mesh.vertices {
+        v.lightmap_uv = v.uv;
+    }
+    mesh
+}
+
 /// 2×2 quad in the XY plane at z = 0, front face toward +Z. UVs span
 /// the whole texture, (0,0) at the top-left corner.
 pub fn quad(color: [f32; 4]) -> MeshData {

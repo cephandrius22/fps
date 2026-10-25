@@ -15,17 +15,23 @@
 //!   func_illusionary    → meshes only
 //!   other brush entities (func_wall, …) → meshes + solid brushes
 //!   info_player_start   → MapInfo::start
+//!
+//!   face lightmaps ─► one atlas (atlas.rs) ─► lightmap UVs per vertex
 //! ```
 //!
 //! Every entity also takes `targetname` (its name) and `script` (its Lua
 //! class). Textures are `textures/<name>.png`; tool textures (trigger,
-//! clip, skip, …) are never drawn. Not yet: lightmaps, button travel,
-//! linked doors, door spawnflags.
+//! clip, skip, …) are never drawn. In a lit map every face draws with the
+//! lightmap atlas; a face with no lightmap got no light at all (ericw
+//! leaves fully dark faces out), so it samples a reserved black luxel, as
+//! Quake draws it black. A map that was never lit keeps the sun term. Not yet: colored or switchable lights, button travel, linked
+//! doors, door spawnflags.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use glam::{Vec2, Vec3};
 
+use crate::atlas::{self, Block};
 use crate::collision::{Aabb, Brush, Plane};
 use crate::entity::{Close, Entity, Model, Mover, Repeat, Trigger, Usable};
 use crate::error::EngineError;
@@ -40,6 +46,8 @@ const TOOL_TEXTURES: [&str; 6] = ["trigger", "clip", "skip", "hint", "origin", "
 /// Texture size assumed when neither the map nor a PNG gives one.
 const DEFAULT_TEXELS: f32 = 64.0;
 const WHITE: [f32; 4] = [1.0; 4];
+/// Luxel value for faces no light reached.
+const DARK: u8 = 0;
 
 /// Quake's player box reaches 24 units below its origin.
 const PLAYER_ORIGIN_HEIGHT: f32 = 24.0;
@@ -101,6 +109,7 @@ pub(crate) fn load(gfx: &mut Gfx, world: &mut World, path: &str) -> Result<MapIn
     }
 
     let surfaces: Vec<Surface> = map.textures.iter().map(|t| surface(gfx, t)).collect();
+    let lighting = lighting(gfx, &map, path);
     let mut info = MapInfo::default();
 
     for entity in &map.entities {
@@ -120,7 +129,7 @@ pub(crate) fn load(gfx: &mut Gfx, world: &mut World, path: &str) -> Result<MapIn
             );
             continue;
         };
-        let models = meshes(gfx, model, &surfaces);
+        let models = meshes(gfx, index, model, &surfaces, lighting.as_ref());
         for spawned in brush_entity(entity, model, models) {
             match spawned {
                 Spawn::Entity(e) => {
@@ -299,47 +308,155 @@ fn surface(gfx: &mut Gfx, texture: &bsp::Texture) -> Surface {
     }
 }
 
-/// One mesh per texture for the model's visible faces.
-fn meshes(gfx: &mut Gfx, model: &bsp::Model, surfaces: &[Surface]) -> Vec<Model> {
-    // BTreeMap: the same draw order on every run.
-    let mut by_texture: BTreeMap<usize, MeshData> = BTreeMap::new();
+/// The map's baked light: every face lightmap packed in one texture,
+/// plus one black luxel for faces that received no light.
+struct Lighting {
+    texture: TextureHandle,
+    /// Atlas size in luxels.
+    size: Vec2,
+    /// Atlas corner of each lit face, by (model, face) index.
+    corners: HashMap<(usize, usize), Vec2>,
+    /// Atlas UV of the black luxel's center.
+    dark: Vec2,
+}
 
-    for face in &model.faces {
+impl Lighting {
+    /// Atlas UVs for a face's corners: its own lightmap, or the black
+    /// luxel for a face light never reached.
+    fn uvs(&self, model: usize, face_index: usize, face: &bsp::Face) -> Vec<Vec2> {
+        let lit = face
+            .lightmap
+            .as_ref()
+            .zip(self.corners.get(&(model, face_index)));
+        let Some((lightmap, corner)) = lit else {
+            return vec![self.dark; face.points.len()];
+        };
+
+        lightmap
+            .coords
+            .iter()
+            .map(|&c| (*corner + c) / self.size)
+            .collect()
+    }
+}
+
+/// Packs every face lightmap into one atlas texture. None for an unlit
+/// map, or (logged) if the atlas cannot be uploaded.
+fn lighting(gfx: &mut Gfx, map: &bsp::Bsp, path: &str) -> Option<Lighting> {
+    let lit: Vec<((usize, usize), &bsp::Lightmap)> = map
+        .models
+        .iter()
+        .enumerate()
+        .flat_map(|(m, model)| {
+            model
+                .faces
+                .iter()
+                .enumerate()
+                .filter_map(move |(f, face)| Some(((m, f), face.lightmap.as_ref()?)))
+        })
+        .collect();
+
+    if lit.is_empty() {
+        return None;
+    }
+
+    // The faces' lightmaps, then the black luxel.
+    let mut blocks: Vec<Block> = lit
+        .iter()
+        .map(|(_, l)| Block {
+            width: l.width,
+            height: l.height,
+            luxels: &l.luxels,
+        })
+        .collect();
+    blocks.push(Block {
+        width: 1,
+        height: 1,
+        luxels: &[DARK],
+    });
+    let packed = atlas::pack(&blocks)?;
+
+    let size = Vec2::new(packed.image.width() as f32, packed.image.height() as f32);
+    let texture = gfx
+        .create_lightmap(&packed.image)
+        .inspect_err(|err| log::warn!("{path}: lightmaps dropped: {}", base::chain(err)))
+        .ok()?;
+    let corners = lit
+        .iter()
+        .zip(&packed.positions)
+        .map(|((key, _), at)| (*key, at.as_vec2()))
+        .collect();
+
+    let dark_corner = packed.positions.last().expect("the black luxel was packed");
+
+    Some(Lighting {
+        texture,
+        size,
+        corners,
+        dark: (dark_corner.as_vec2() + 0.5) / size,
+    })
+}
+
+/// One mesh per texture for the model's visible faces; lit by the atlas
+/// when the map has baked light.
+fn meshes(
+    gfx: &mut Gfx,
+    index: usize,
+    model: &bsp::Model,
+    surfaces: &[Surface],
+    lighting: Option<&Lighting>,
+) -> Vec<Model> {
+    // By texture; a BTreeMap keeps the draw order stable.
+    let mut groups: BTreeMap<usize, MeshData> = BTreeMap::new();
+
+    for (face_index, face) in model.faces.iter().enumerate() {
         let Some(&Surface::Drawn { texels, .. }) = surfaces.get(face.texture) else {
             continue;
         };
-        append_face(by_texture.entry(face.texture).or_default(), face, texels);
+        let light_uvs = lighting.map(|l| l.uvs(index, face_index, face));
+
+        let group = groups.entry(face.texture).or_default();
+        append_face(group, face, texels, light_uvs.as_deref());
     }
 
-    by_texture
+    groups
         .into_iter()
-        .map(|(index, data)| {
-            let texture = match surfaces[index] {
+        .map(|(texture_index, data)| {
+            let texture = match surfaces[texture_index] {
                 Surface::Drawn { texture, .. } => texture,
                 Surface::Hidden => None,
             };
+
             Model {
                 mesh: gfx.create_mesh(&data),
                 texture,
+                lightmap: lighting.map(|l| l.texture),
             }
         })
         .collect()
 }
 
 /// Adds a convex face as a triangle fan. Collinear corners (common in
-/// Quake faces) only add zero-area triangles.
-fn append_face(data: &mut MeshData, face: &bsp::Face, texels: Vec2) {
+/// Quake faces) only add zero-area triangles. `light_uvs`, if any, are
+/// the corners' lightmap atlas coordinates.
+fn append_face(data: &mut MeshData, face: &bsp::Face, texels: Vec2, light_uvs: Option<&[Vec2]>) {
     let base = data.vertices.len() as u32;
     let normal = to_engine_direction(face.normal).to_array();
+    let light_uv = |i: usize| light_uvs.map_or(Vec2::ZERO, |uvs| uvs[i]);
 
-    data.vertices
-        .extend(face.points.iter().zip(&face.texels).map(|(&p, &t)| Vertex {
-            pos: to_engine_point(p).to_array(),
-            normal,
-            uv: (t / texels).to_array(),
-            color: WHITE,
-            ..Default::default()
-        }));
+    data.vertices.extend(
+        face.points
+            .iter()
+            .zip(&face.texels)
+            .enumerate()
+            .map(|(i, (&p, &t))| Vertex {
+                pos: to_engine_point(p).to_array(),
+                normal,
+                uv: (t / texels).to_array(),
+                lightmap_uv: light_uv(i).to_array(),
+                color: WHITE,
+            }),
+    );
 
     let count = face.points.len() as u32;
     data.indices
@@ -574,20 +691,35 @@ mod test_map {
 
     use super::*;
     use crate::assets::Registry;
+    use crate::gfx::Frame;
     use crate::input::Input;
     use crate::look::MouseLook;
-    use crate::test_util::{headless, repo_assets};
+    use crate::look::{Look, LookSettings};
+    use crate::test_util::{assert_matches_reference, headless_with, repo_assets};
     use crate::walk::{WalkSettings, Walker};
 
     const PATH: &str = "maps/test.bsp";
+    const REFERENCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/reference/test-map.png");
+    /// Reference render size: small, so few pixels sit on triangle edges.
+    const REFERENCE_SIZE: (u32, u32) = (320, 180);
     const DT: f32 = 1.0 / 60.0;
     const EYE: f32 = 1.6;
     const HALF: Vec3 = Vec3::new(0.3, 0.9, 0.3);
 
     /// Runs `check` on a world holding the test map; skips without a GPU.
     fn with_map(check: impl FnOnce(&mut World, &MapInfo)) {
+        with_map_rendering(|world, info, _| check(world, info));
+    }
+
+    /// As `with_map`, also handing over the (320×180) renderer.
+    fn with_map_rendering(check: impl FnOnce(&mut World, &MapInfo, &mut render::Renderer)) {
         let vfs = repo_assets();
-        let Some(mut renderer) = headless(&vfs) else {
+        let config = render::RenderConfig {
+            internal_width: REFERENCE_SIZE.0,
+            internal_height: REFERENCE_SIZE.1,
+            ..Default::default()
+        };
+        let Some(mut renderer) = headless_with(&vfs, config) else {
             return;
         };
         let mut registry = Registry::with_shaders();
@@ -599,7 +731,7 @@ mod test_map {
         let mut world = World::new();
 
         let info = gfx.load_map(PATH, &mut world).unwrap();
-        check(&mut world, &info);
+        check(&mut world, &info, &mut renderer);
     }
 
     fn run(world: &mut World, seconds: f32, player: Option<Aabb>) {
@@ -612,6 +744,27 @@ mod test_map {
     fn reach_north(world: &World, from: Vec3) -> f32 {
         let trace = world.trace(from, from + Vec3::NEG_Z * 30.0, Vec3::ZERO);
         from.z - trace.end.z
+    }
+
+    /// The view from the player start, lit by the baked lightmaps, without
+    /// fog or palette (those would amplify GPU differences), against the
+    /// committed reference image. Catches regressions anywhere from map
+    /// parsing to shading.
+    #[test]
+    fn view_from_the_start_matches_the_reference() {
+        with_map_rendering(|world, info, renderer| {
+            let start = info.start.unwrap();
+            let eye = start.feet + Vec3::Y * EYE;
+
+            let mut frame = Frame::new();
+            frame.begin(0.0);
+            frame.camera = Look::new(start.yaw, 0.0).camera(eye, &LookSettings::default());
+            world.draw(&mut frame);
+            frame.submit(renderer);
+
+            let shot = renderer.capture().unwrap();
+            assert_matches_reference(&shot, std::path::Path::new(REFERENCE));
+        });
     }
 
     #[test]

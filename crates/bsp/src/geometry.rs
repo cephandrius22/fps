@@ -6,13 +6,18 @@
 //!   face  ─► plane (normal, flipped by `side`)
 //!         ─► surfedges[first..] ─► edges ─► vertices   (corners, in order)
 //!         ─► texinfo ─► texture index, s/t axes        (texels)
+//!         ─► light offset + styles ─► lighting lump    (lightmap)
 //! ```
+//!
+//! Lightmap sizes must match ericw-tools' `light` exactly, or faces read
+//! each other's luxels: texels are computed in double precision, stored
+//! as f32, then the bounds are floored / ceiled to whole luxels.
 
-use glam::{Vec2, Vec3};
+use glam::{DVec2, Vec2, Vec3};
 
 use crate::error::{Result, index_error};
 use crate::reader::{Lump, Lumps, Version, f32_at, i16_at, i32_at, u16_at, u32_at, vec3_at};
-use crate::{Face, Model};
+use crate::{Face, Lightmap, Model};
 
 const PLANE_BYTES: usize = 20;
 const VERTEX_BYTES: usize = 12;
@@ -21,6 +26,10 @@ const MODEL_BYTES: usize = 64;
 const SURFEDGE_BYTES: usize = 4;
 const BSP29_FACE_BYTES: usize = 20;
 const BSP2_FACE_BYTES: usize = 28;
+/// Texels per luxel side: Quake's fixed lightmap scale.
+const TEXELS_PER_LUXEL: f64 = 16.0;
+/// Style slot value meaning "no lightmap".
+const NO_STYLE: u8 = 255;
 
 /// Every model with its faces. Brushes come from the BSPX lump later.
 pub(crate) fn models(lumps: &Lumps) -> Result<Vec<Model>> {
@@ -57,6 +66,10 @@ struct FaceRecord {
     first_edge: i64,
     edge_count: i64,
     texinfo: i64,
+    /// Light style per lightmap; the first is the steady one.
+    styles: [u8; 4],
+    /// Byte offset into the lighting lump; negative for none.
+    light_offset: i64,
 }
 
 /// The lumps faces index into.
@@ -70,6 +83,8 @@ struct Geometry<'a> {
     edges: Vec<[u32; 2]>,
     /// Face records, still raw: their size depends on the version.
     faces: &'a [u8],
+    /// One byte per luxel; faces point into it.
+    lighting: &'a [u8],
 }
 
 impl<'a> Geometry<'a> {
@@ -96,6 +111,7 @@ impl<'a> Geometry<'a> {
             surfedges: lumps.records(Lump::SurfEdges)?,
             edges,
             faces: lumps.get(Lump::Faces)?,
+            lighting: lumps.get(Lump::Lighting)?,
         })
     }
 
@@ -136,19 +152,47 @@ impl<'a> Geometry<'a> {
             points.reverse();
         }
 
-        // s = p · s_axis + s_offset, likewise t: texture space in texels.
-        let [s, t] = [0, 16].map(|at| (vec3_at(info, at), f32_at(info, at + 12)));
-        let texels = points
-            .iter()
-            .map(|&p| Vec2::new(p.dot(s.0) + s.1, p.dot(t.0) + t.1))
-            .collect();
+        let axes = [0, 16].map(|at| (vec3_at(info, at), f32_at(info, at + 12)));
+        let texels: Vec<Vec2> = points.iter().map(|&p| texel(p, &axes)).collect();
+        let lightmap = self.lightmap(&face, &texels)?;
 
         Ok(Face {
             texture,
             normal,
             points,
             texels,
+            lightmap,
         })
+    }
+
+    /// The face's steady (style 0) lightmap, if it has one.
+    fn lightmap(&self, face: &FaceRecord, texels: &[Vec2]) -> Result<Option<Lightmap>> {
+        if face.styles[0] == NO_STYLE || face.light_offset < 0 {
+            return Ok(None);
+        }
+
+        let (mins, size) = luxel_grid(texels);
+        let count = (size[0] * size[1]) as usize;
+        let start = face.light_offset as usize;
+        let luxels = self
+            .lighting
+            .get(start..start + count)
+            .ok_or_else(|| index_error("light offset", face.light_offset))?;
+
+        // Luxel i covers texels 16i..16i+16 relative to the grid's
+        // origin; its center is at i + 0.5.
+        let coords = texels
+            .iter()
+            .map(|t| t.as_dvec2() / TEXELS_PER_LUXEL - mins + 0.5)
+            .map(|c| c.as_vec2())
+            .collect();
+
+        Ok(Some(Lightmap {
+            width: size[0],
+            height: size[1],
+            luxels: luxels.to_vec(),
+            coords,
+        }))
     }
 
     /// Decodes face record `index` for either version.
@@ -166,6 +210,8 @@ impl<'a> Geometry<'a> {
                 first_edge: i64::from(i32_at(record, 4)),
                 edge_count: i64::from(i16_at(record, 8)),
                 texinfo: i64::from(i16_at(record, 10)),
+                styles: record[12..16].try_into().expect("4 bytes"),
+                light_offset: i64::from(i32_at(record, 16)),
             },
             Version::Bsp2 => FaceRecord {
                 plane: u32_at(record, 0) as usize,
@@ -173,6 +219,8 @@ impl<'a> Geometry<'a> {
                 first_edge: i64::from(i32_at(record, 8)),
                 edge_count: i64::from(i32_at(record, 12)),
                 texinfo: i64::from(i32_at(record, 16)),
+                styles: record[20..24].try_into().expect("4 bytes"),
+                light_offset: i64::from(i32_at(record, 24)),
             },
         })
     }
@@ -200,6 +248,30 @@ impl<'a> Geometry<'a> {
     }
 }
 
+/// Texture coordinate of `p` along the (axis, offset) pairs, as ericw
+/// computes it: in double precision, then rounded to f32.
+fn texel(p: Vec3, axes: &[(Vec3, f32); 2]) -> Vec2 {
+    let p = p.as_dvec3();
+    let [s, t] = axes.map(|(axis, offset)| (p.dot(axis.as_dvec3()) + f64::from(offset)) as f32);
+    Vec2::new(s, t)
+}
+
+/// The face's luxel grid: its origin (in luxels, from texel 0) and size.
+/// Bounds snap outward to whole luxels; a grid has one more luxel than
+/// its extent on each axis, so both edges get a sample.
+fn luxel_grid(texels: &[Vec2]) -> (DVec2, [u32; 2]) {
+    let start = (DVec2::splat(f64::MAX), DVec2::splat(f64::MIN));
+    let (lo, hi) = texels.iter().fold(start, |(lo, hi), t| {
+        let t = t.as_dvec2();
+        (lo.min(t), hi.max(t))
+    });
+
+    let mins = (lo / TEXELS_PER_LUXEL).floor();
+    let maxs = (hi / TEXELS_PER_LUXEL).ceil();
+    let size = (maxs - mins).as_uvec2() + 1;
+    (mins, size.to_array())
+}
+
 /// Polygon normal by Newell's method: robust for any winding and for
 /// collinear corners, which Quake faces often have. Not normalized.
 fn newell(points: &[Vec3]) -> Vec3 {
@@ -218,6 +290,32 @@ fn newell(points: &[Vec3]) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn luxel_grid_snaps_outward_and_adds_an_edge() {
+        // Texels 8..40 across, 0..16 down: luxels 0..3 and 0..1.
+        let (mins, size) = luxel_grid(&[Vec2::new(8.0, 0.0), Vec2::new(40.0, 16.0)]);
+
+        assert_eq!(mins, DVec2::ZERO);
+        assert_eq!(size, [4, 2]);
+    }
+
+    #[test]
+    fn luxel_grid_handles_negative_texels() {
+        let (mins, size) = luxel_grid(&[Vec2::new(-20.0, -16.0), Vec2::new(-4.0, 0.0)]);
+
+        assert_eq!(mins, DVec2::new(-2.0, -1.0));
+        assert_eq!(size, [3, 2]);
+    }
+
+    #[test]
+    fn texel_is_dot_plus_offset() {
+        let axes = [(Vec3::X, 8.0), (Vec3::NEG_Y, 0.0)];
+        assert_eq!(
+            texel(Vec3::new(10.0, 4.0, 99.0), &axes),
+            Vec2::new(18.0, -4.0)
+        );
+    }
 
     #[test]
     fn newell_follows_winding() {

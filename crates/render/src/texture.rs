@@ -1,8 +1,15 @@
-//! Textures: GPU storage, nearest-neighbor sampling, hot replacement.
+//! Textures: GPU storage, sampling, hot replacement. Two kinds share one
+//! bind group layout but differ in sampling:
 //!
-//! Each texture owns a bind group (texture + shared sampler) so a draw
-//! switches textures with one `set_bind_group`. Untextured draws use a
-//! 1×1 white fallback, which leaves vertex color unchanged.
+//! ```text
+//!   Albedo    nearest, repeat, mips per setting   fallback: 1×1 white
+//!   Lightmap  bilinear, clamp, no mips             fallback: 1×1, alpha 0
+//! ```
+//!
+//! Each texture owns a bind group (texture + its kind's sampler) so a
+//! draw switches textures with one `set_bind_group`. The white albedo
+//! fallback leaves vertex color unchanged; the lightmap fallback's zero
+//! alpha tells the shader "no baked light, use the sun term".
 //!
 //! Mipmaps are a setting ([`Mipmaps`]): off, distant surfaces shimmer;
 //! on, the chain is built on the CPU at upload time.
@@ -20,6 +27,17 @@ use crate::error::{RenderError, Result};
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const BYTES_PER_PIXEL: u32 = 4;
 const WHITE: [u8; 4] = [u8::MAX; 4];
+/// Alpha 0 marks "no lightmap" to mesh.wgsl.
+const UNLIT: [u8; 4] = [0; 4];
+
+/// How a texture is sampled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextureKind {
+    /// Surface colors: chunky nearest-neighbor texels.
+    Albedo,
+    /// Baked light: smooth between luxels, as GLQuake drew it.
+    Lightmap,
+}
 
 /// Handle to a texture owned by the renderer. Detects use after destroy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -29,13 +47,16 @@ struct GpuTexture {
     // The bind group keeps the texture alive; held for clarity.
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+    kind: TextureKind,
 }
 
 pub(crate) struct TextureStore {
     layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
+    albedo_sampler: wgpu::Sampler,
+    lightmap_sampler: wgpu::Sampler,
     mipmaps: Mipmaps,
-    fallback: GpuTexture,
+    white: GpuTexture,
+    unlit: GpuTexture,
     textures: Slots<GpuTexture>,
 }
 
@@ -65,7 +86,7 @@ impl TextureStore {
 
         // Nearest for the chunky texel look; repeat so UVs past 1 tile.
         // Mip selection is the only filtering the setting may add.
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let albedo_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("texture-nearest-repeat"),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
@@ -74,16 +95,30 @@ impl TextureStore {
             mipmap_filter: mip_filter(mipmaps),
             ..Default::default()
         });
+        // Bilinear: light fades smoothly across a face. Clamp, so an atlas
+        // edge never wraps to the other side.
+        let lightmap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("lightmap-linear-clamp"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
 
-        let white = Image::solid(WHITE);
-        let mips = smaller_mips(&white, mipmaps);
-        let fallback = create_gpu_texture(device, queue, &layout, &sampler, &white, &mips);
+        // 1×1 has no smaller mips, so neither fallback needs any.
+        let fallback = |pixel, sampler, kind| {
+            let image = Image::solid(pixel);
+            create_gpu_texture(device, queue, &layout, sampler, &image, &[], kind)
+        };
+        let white = fallback(WHITE, &albedo_sampler, TextureKind::Albedo);
+        let unlit = fallback(UNLIT, &lightmap_sampler, TextureKind::Lightmap);
 
         Self {
             layout,
-            sampler,
+            albedo_sampler,
+            lightmap_sampler,
             mipmaps,
-            fallback,
+            white,
+            unlit,
             textures: Slots::default(),
         }
     }
@@ -98,14 +133,15 @@ impl TextureStore {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         image: &Image,
+        kind: TextureKind,
     ) -> Result<TextureId> {
         check_size(device, image)?;
 
-        let gpu = self.upload(device, queue, image);
+        let gpu = self.upload(device, queue, image, kind);
         Ok(TextureId(self.textures.insert(gpu)))
     }
 
-    /// Swaps in new pixels, any size; the handle stays valid.
+    /// Swaps in new pixels, any size; the handle and kind stay.
     pub fn replace(
         &mut self,
         device: &wgpu::Device,
@@ -115,19 +151,32 @@ impl TextureStore {
     ) -> Result<()> {
         check_size(device, image)?;
 
-        let gpu = self.upload(device, queue, image);
-        let slot = self
+        let kind = self
             .textures
-            .get_mut(id.0)
-            .ok_or(RenderError::UnknownTexture)?;
-        *slot = gpu;
+            .get(id.0)
+            .ok_or(RenderError::UnknownTexture)?
+            .kind;
+        let gpu = self.upload(device, queue, image, kind);
+        if let Some(slot) = self.textures.get_mut(id.0) {
+            *slot = gpu;
+        }
 
         Ok(())
     }
 
-    fn upload(&self, device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> GpuTexture {
-        let mips = smaller_mips(image, self.mipmaps);
-        create_gpu_texture(device, queue, &self.layout, &self.sampler, image, &mips)
+    fn upload(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &Image,
+        kind: TextureKind,
+    ) -> GpuTexture {
+        let (sampler, mips) = match kind {
+            TextureKind::Albedo => (&self.albedo_sampler, smaller_mips(image, self.mipmaps)),
+            TextureKind::Lightmap => (&self.lightmap_sampler, Vec::new()),
+        };
+
+        create_gpu_texture(device, queue, &self.layout, sampler, image, &mips, kind)
     }
 
     /// Frees a texture. False if the handle was already stale.
@@ -135,17 +184,21 @@ impl TextureStore {
         self.textures.remove(id.0).is_some()
     }
 
-    /// Bind group for `id`; the white fallback for None. A destroyed
-    /// texture is a caller bug: flagged, then drawn white.
-    pub fn bind_group(&self, id: Option<TextureId>) -> &wgpu::BindGroup {
+    /// Bind group for `id`, or `kind`'s fallback for None. A destroyed
+    /// texture is a caller bug: flagged, then drawn as the fallback.
+    pub fn bind_group(&self, id: Option<TextureId>, kind: TextureKind) -> &wgpu::BindGroup {
+        let fallback = match kind {
+            TextureKind::Albedo => &self.white.bind_group,
+            TextureKind::Lightmap => &self.unlit.bind_group,
+        };
         let Some(id) = id else {
-            return &self.fallback.bind_group;
+            return fallback;
         };
 
         let texture = self.textures.get(id.0);
         base::verify!(texture.is_some(), "draw uses destroyed texture {id:?}");
 
-        texture.map_or(&self.fallback.bind_group, |t| &t.bind_group)
+        texture.map_or(fallback, |t| &t.bind_group)
     }
 }
 
@@ -189,8 +242,8 @@ fn smaller_mips(image: &Image, mipmaps: Mipmaps) -> Vec<Image> {
     }
 }
 
-/// Creates a texture from `base` plus its smaller `mips`, with the bind
-/// group draws use.
+/// Creates a texture of `kind` from `base` plus its smaller `mips`, with
+/// the bind group draws use.
 fn create_gpu_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -198,6 +251,7 @@ fn create_gpu_texture(
     sampler: &wgpu::Sampler,
     base: &Image,
     mips: &[Image],
+    kind: TextureKind,
 ) -> GpuTexture {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("texture"),
@@ -249,6 +303,7 @@ fn create_gpu_texture(
     GpuTexture {
         _texture: texture,
         bind_group,
+        kind,
     }
 }
 

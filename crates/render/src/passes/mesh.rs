@@ -6,6 +6,7 @@
 //! ```text
 //!   group 0: frame uniforms + model matrices (once per pass)
 //!   group 1: texture + sampler (only when the texture changes)
+//!   group 2: lightmap + sampler (only when the lightmap changes)
 //! ```
 
 use crate::error::Result;
@@ -14,7 +15,7 @@ use glam::{Mat4, Vec3, Vec4};
 use crate::mesh::{MeshStore, Vertex};
 use crate::shader::{checked, compile};
 use crate::target::{COLOR_FORMAT, DEPTH_FORMAT, LowRes};
-use crate::texture::TextureStore;
+use crate::texture::{TextureKind, TextureStore};
 use crate::{Camera, Draw, Falloff, Fog};
 
 const INITIAL_CAPACITY: usize = 256;
@@ -111,7 +112,7 @@ pub(crate) struct MeshPass {
 }
 
 impl MeshPass {
-    /// `texture_layout` is group 1; see [`TextureStore::layout`].
+    /// `texture_layout` is groups 1 and 2; see [`TextureStore::layout`].
     pub fn new(
         device: &wgpu::Device,
         texture_layout: &wgpu::BindGroupLayout,
@@ -126,7 +127,11 @@ impl MeshPass {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mesh-pipeline-layout"),
-            bind_group_layouts: &[Some(&bind_layout), Some(texture_layout)],
+            bind_group_layouts: &[
+                Some(&bind_layout),
+                Some(texture_layout),
+                Some(texture_layout),
+            ],
             immediate_size: 0,
         });
         let pipeline = build_pipeline(device, &pipeline_layout, source)?;
@@ -218,8 +223,9 @@ impl MeshPass {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
 
-        // None = nothing bound yet; Some(None) = the white fallback.
+        // None = nothing bound yet; Some(None) = the fallback.
         let mut bound_texture = None;
+        let mut bound_lightmap = None;
 
         for (i, draw) in draws.iter().enumerate() {
             // A destroyed mesh is a caller bug: flag it, skip the draw.
@@ -230,8 +236,14 @@ impl MeshPass {
             };
 
             if bound_texture != Some(draw.texture) {
-                pass.set_bind_group(1, textures.bind_group(draw.texture), &[]);
+                let group = textures.bind_group(draw.texture, TextureKind::Albedo);
+                pass.set_bind_group(1, group, &[]);
                 bound_texture = Some(draw.texture);
+            }
+            if bound_lightmap != Some(draw.lightmap) {
+                let group = textures.bind_group(draw.lightmap, TextureKind::Lightmap);
+                pass.set_bind_group(2, group, &[]);
+                bound_lightmap = Some(draw.lightmap);
             }
 
             let instance = i as u32;

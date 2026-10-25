@@ -4,13 +4,15 @@
 //!
 //! ```text
 //!   .bsp ─► Lumps ─┬─ faces + texinfo + edges ─► Model.faces (polygons, texels)
+//!                  ├─ lighting ───────────────► Face.lightmap (luxels, coords)
 //!                  ├─ BSPX BRUSHLIST ─────────► Model.brushes (planes)
 //!                  ├─ miptex headers ─────────► textures (name, size)
 //!                  └─ entity text ────────────► entities (key/value)
 //! ```
 //!
-//! Only what the engine draws and collides with is read. Visibility,
-//! clip hulls and lightmaps are skipped for now.
+//! Only what the engine draws and collides with is read. Visibility and
+//! clip hulls are skipped; of the lightmaps, only style 0 (steady light)
+//! in grayscale, at Quake's 16 texels per luxel.
 
 mod brushlist;
 mod entities;
@@ -77,6 +79,29 @@ pub struct Face {
     pub points: Vec<Vec3>,
     /// Texture coordinates per corner, in texels.
     pub texels: Vec<Vec2>,
+    /// Baked light; None when the face is unlit (e.g. sky) or the map
+    /// was not lit.
+    pub lightmap: Option<Lightmap>,
+}
+
+/// A face's baked light: a small grid of luxels, one per 16 × 16 texels.
+///
+/// ```text
+///   luxel (0,0)   (1,0)   …  (width−1, 0)
+///     ·       ·       ·          corners map into this grid by `coords`;
+///     ·       ·       ·          luxel centers sit at .5
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lightmap {
+    /// Luxels across.
+    pub width: u32,
+    /// Luxels down.
+    pub height: u32,
+    /// Brightness per luxel, row-major. Quake doubles it when lighting
+    /// ("overbright"): 128 is full texture brightness, 255 nearly twice.
+    pub luxels: Vec<u8>,
+    /// Per corner (matching `Face::points`), position in luxels.
+    pub coords: Vec<Vec2>,
 }
 
 /// A convex solid: the space behind every plane.

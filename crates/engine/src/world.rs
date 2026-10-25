@@ -250,10 +250,7 @@ impl World {
             let position = slot.prev_position.lerp(slot.entity.position, frame.alpha);
             let transform = Mat4::from_rotation_translation(slot.entity.rotation, position);
             for model in &slot.entity.models {
-                match model.texture {
-                    Some(texture) => frame.draw_textured(model.mesh, texture, transform),
-                    None => frame.draw_mesh(model.mesh, transform),
-                }
+                frame.push(model.mesh, model.texture, model.lightmap, transform);
             }
         }
     }

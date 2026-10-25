@@ -323,6 +323,7 @@ pub fn build(gfx: &mut Gfx, world: &mut World, textures: &Textures) {
             models: vec![Model {
                 mesh: crate_mesh,
                 texture: wood_texture,
+                lightmap: None,
             }],
             ..Default::default()
         });
@@ -356,6 +357,7 @@ fn with_mesh(
         .map(|brush| Model {
             mesh: gfx.create_mesh(&brush.mesh(meters_per_texture)),
             texture,
+            lightmap: None,
         })
         .collect();
 
@@ -370,6 +372,7 @@ fn red_button(gfx: &mut Gfx, entity: Entity) -> Entity {
         .map(|brush| Model {
             mesh: gfx.create_mesh(&tinted(brush.mesh(WOOD_METERS), BUTTON_RED)),
             texture: None,
+            lightmap: None,
         })
         .collect();
 
