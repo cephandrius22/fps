@@ -315,6 +315,6 @@ To move to a newer Rust: change `channel` in `rust-toolchain.toml`, run
 See [retro-fps-engine-plan.md](retro-fps-engine-plan.md). It starts with a
 status section: what is implemented and where each phase stands. Phase 1
 lacks only what needs a map (BSP loader, lightmaps, reference-image
-test; they need ericw-tools). Phase 2 has collision, the walker,
+test), now unblocked: ericw-tools is built locally. Phase 2 has collision, the walker,
 entities with doors, buttons and triggers, and the start of Lua
 scripting; spawning from map entities waits for a map loader.

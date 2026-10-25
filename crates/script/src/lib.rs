@@ -26,20 +26,16 @@
 //! the new methods, because they look their class up by name on every
 //! access.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+mod api;
 
-use mlua::{
-    Function, HookTriggers, Lua, LuaOptions, RegistryKey, StdLib, Table, Value, Variadic, VmState,
-};
+use mlua::{HookTriggers, Lua, LuaOptions, RegistryKey, StdLib, Table, Value, VmState};
+
+pub use api::Command;
+use api::{Queue, install_api};
 
 /// VM instructions one load or hook call may run before it is stopped.
 /// About 10 ms of work: far more than any sane hook needs.
 const INSTRUCTION_BUDGET: u32 = 1_000_000;
-/// Base-library functions that read files.
-const FILE_FUNCTIONS: [&str; 2] = ["dofile", "loadfile"];
-/// Global table holding the engine API.
-const API_TABLE: &str = "world";
 
 /// Standard libraries scripts get. No io, os or package: scripts touch
 /// the world only through `world.*`.
@@ -73,20 +69,6 @@ pub enum ScriptError {
         /// Lua's report.
         message: String,
     },
-}
-
-/// Something a script asked the engine to do.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Command {
-    /// Fire `target` after `delay` seconds (0 = next chance).
-    Fire {
-        /// Entity name to fire.
-        target: String,
-        /// Seconds to wait.
-        delay: f32,
-    },
-    /// Log a line from the script.
-    Log(String),
 }
 
 /// An entity event the engine reports to its script.
@@ -137,7 +119,7 @@ impl Instance {
 /// The Lua state and the commands scripts have queued.
 pub struct Vm {
     lua: Lua,
-    commands: Rc<RefCell<Vec<Command>>>,
+    commands: Queue,
 }
 
 impl Default for Vm {
@@ -152,7 +134,7 @@ impl Vm {
         // Safe libraries only, so this fails only if memory runs out.
         let lua = Lua::new_with(libraries(), LuaOptions::default())
             .expect("Lua state with safe standard libraries");
-        let commands = Rc::new(RefCell::new(Vec::new()));
+        let commands = Queue::default();
 
         install_api(&lua, &commands).expect("install world API into a fresh Lua state");
         Self { lua, commands }
@@ -256,59 +238,6 @@ impl Vm {
         self.lua.remove_hook();
         result
     }
-}
-
-/// Installs `world.fire`, `world.fire_after`, `world.log` and a `print`
-/// that logs, all queuing into `commands`. Removes file access.
-fn install_api(lua: &Lua, commands: &Rc<RefCell<Vec<Command>>>) -> mlua::Result<()> {
-    let globals = lua.globals();
-    for name in FILE_FUNCTIONS {
-        globals.set(name, Value::Nil)?;
-    }
-
-    let api = lua.create_table()?;
-    let queue = |commands: &Rc<RefCell<Vec<Command>>>| {
-        let commands = Rc::clone(commands);
-        move |command| commands.borrow_mut().push(command)
-    };
-
-    let push = queue(commands);
-    let fire = lua.create_function(move |_, target: String| {
-        push(Command::Fire { target, delay: 0.0 });
-        Ok(())
-    })?;
-    api.set("fire", fire)?;
-
-    let push = queue(commands);
-    let fire_after = lua.create_function(move |_, (delay, target): (f32, String)| {
-        push(Command::Fire {
-            target,
-            delay: delay.max(0.0),
-        });
-        Ok(())
-    })?;
-    api.set("fire_after", fire_after)?;
-
-    let push = queue(commands);
-    let log = lua.create_function(move |_, text: String| {
-        push(Command::Log(text));
-        Ok(())
-    })?;
-    api.set("log", log)?;
-    globals.set(API_TABLE, api)?;
-
-    // print(a, b) logs "a\tb", like stock Lua prints to stdout.
-    let push = queue(commands);
-    let tostring: Function = globals.get("tostring")?;
-    let print = lua.create_function(move |_, values: Variadic<Value>| {
-        let parts = values
-            .into_iter()
-            .map(|value| tostring.call::<String>(value))
-            .collect::<mlua::Result<Vec<_>>>()?;
-        push(Command::Log(parts.join("\t")));
-        Ok(())
-    })?;
-    globals.set("print", print)
 }
 
 #[cfg(test)]

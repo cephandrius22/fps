@@ -20,6 +20,7 @@ mod fly;
 mod gfx;
 mod input;
 mod look;
+mod mover;
 mod sim;
 mod walk;
 mod world;

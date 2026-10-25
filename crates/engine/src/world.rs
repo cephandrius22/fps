@@ -28,14 +28,13 @@ use physics::BodyId;
 use script::{Command, Hook, Instance, ScriptError, Vm};
 
 use crate::collision::{Aabb, Brush, Trace};
-use crate::entity::{Close, Entity, Mover, Repeat};
+use crate::entity::{Entity, Repeat};
 use crate::error::EngineError;
 use crate::gfx::Frame;
+use crate::mover::{MoverState, Obstacles};
 
 /// How far the player can reach to use something, meters.
 pub const USE_REACH: f32 = 2.0;
-/// Movers shorter than this (meters) arrive instantly.
-const MIN_TRAVEL: f32 = 1e-4;
 /// Fires handled per tick; the rest wait for the next. Stops a script
 /// that fires its own name from looping forever within one tick.
 const MAX_FIRES_PER_TICK: usize = 64;
@@ -46,43 +45,13 @@ const SCRIPT_LOG: &str = "script";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntityId(SlotId);
 
-/// Where a mover is in its cycle.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Motion {
-    Closed,
-    Opening,
-    /// Fully open for `elapsed` seconds.
-    Open {
-        elapsed: f32,
-    },
-    Closing,
-}
-
-/// Mover progress: 0 at spawn, 1 at spawn + travel.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct MoverState {
-    progress: f32,
-    motion: Motion,
-}
-
-impl MoverState {
-    /// Fired: closed or closing movers open; open toggles close.
-    fn fire(&mut self, close: Close) {
-        self.motion = match self.motion {
-            Motion::Closed | Motion::Closing => Motion::Opening,
-            Motion::Open { .. } if close == Close::OnFire => Motion::Closing,
-            other => other,
-        };
-    }
-}
-
 /// An entity plus what the engine tracks about it.
 struct Slot {
     entity: Entity,
-    spawn: Vec3,
     /// Position at the previous tick, for interpolation.
     prev_position: Vec3,
     body: Option<BodyId>,
+    /// Used only when `entity.mover` is set.
     mover: MoverState,
     /// Player was inside the trigger volume last tick.
     inside: bool,
@@ -134,13 +103,9 @@ impl World {
             .and_then(|class| self.instantiate(class, entity.name.as_deref()));
 
         let slot = Slot {
-            spawn: entity.position,
             prev_position: entity.position,
             body,
-            mover: MoverState {
-                progress: 0.0,
-                motion: Motion::Closed,
-            },
+            mover: MoverState::new(entity.position),
             inside: false,
             spent: false,
             entity,
@@ -148,7 +113,8 @@ impl World {
         };
         let id = EntityId(self.entities.insert(slot));
 
-        if let Some(instance) = &self.entities.get(id.0).and_then(|s| s.instance.as_ref()) {
+        let instance = self.entities.get(id.0).and_then(|s| s.instance.as_ref());
+        if let Some(instance) = instance {
             run_hook(&mut self.vm, instance, Hook::Spawn);
         }
         self.absorb_commands();
@@ -240,10 +206,20 @@ impl World {
     /// scripts tick, and due fires run.
     pub fn tick(&mut self, dt: f32, player: Option<Aabb>) {
         let player = player.map(Aabb::to_physics);
+        let mut obstacles = Obstacles {
+            physics: &mut self.physics,
+            player,
+        };
 
         for (_, slot) in self.entities.iter_mut() {
             slot.prev_position = slot.entity.position;
-            step_mover(slot, &mut self.physics, player, dt);
+
+            let Some(mover) = &slot.entity.mover else {
+                continue;
+            };
+            if let Some(position) = slot.mover.step(mover, slot.body, &mut obstacles, dt) {
+                slot.entity.position = position;
+            }
         }
 
         self.enter_triggers(player);
@@ -418,90 +394,10 @@ fn run_hook(vm: &mut Vm, instance: &Instance, hook: Hook) {
     }
 }
 
-/// Advances one mover by `dt`. A step that would push into the player is
-/// skipped: opening waits, closing turns back.
-fn step_mover(
-    slot: &mut Slot,
-    physics: &mut physics::World,
-    player: Option<physics::Aabb>,
-    dt: f32,
-) {
-    let Some(mover) = slot.entity.mover else {
-        return;
-    };
-    let state = &mut slot.mover;
-
-    let direction = match state.motion {
-        Motion::Closed => return,
-        Motion::Open { elapsed } => {
-            let elapsed = elapsed + dt;
-            state.motion = match mover.close {
-                Close::After(wait) if elapsed >= wait => Motion::Closing,
-                _ => Motion::Open { elapsed },
-            };
-            return;
-        }
-        Motion::Opening => 1.0,
-        Motion::Closing => -1.0,
-    };
-
-    let progress = (state.progress + direction * progress_rate(&mover) * dt).clamp(0.0, 1.0);
-    let position = slot.spawn + mover.travel * progress;
-
-    let moved = try_move(physics, slot.body, slot.entity.position, position, player);
-    if !moved {
-        if state.motion == Motion::Closing {
-            state.motion = Motion::Opening;
-        }
-        return;
-    }
-
-    state.progress = progress;
-    slot.entity.position = position;
-    if state.motion == Motion::Opening && progress >= 1.0 {
-        state.motion = Motion::Open { elapsed: 0.0 };
-    }
-    if state.motion == Motion::Closing && progress <= 0.0 {
-        state.motion = Motion::Closed;
-    }
-}
-
-/// Share of the full travel covered per second.
-fn progress_rate(mover: &Mover) -> f32 {
-    let distance = mover.travel.length();
-    if distance < MIN_TRAVEL {
-        return f32::INFINITY;
-    }
-
-    mover.speed / distance
-}
-
-/// Moves the body from `from` to `to`. If that overlaps the player, puts
-/// it back and returns false. Movers without a body always move.
-fn try_move(
-    physics: &mut physics::World,
-    body: Option<BodyId>,
-    from: Vec3,
-    to: Vec3,
-    player: Option<physics::Aabb>,
-) -> bool {
-    let Some(body) = body else {
-        return true;
-    };
-
-    physics.set_offset(body, to);
-    let crushing = player.is_some_and(|p| physics.overlaps(body, &p));
-    if crushing {
-        physics.set_offset(body, from);
-    }
-
-    !crushing
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{Trigger, Usable};
+    use crate::entity::{Close, Mover, Trigger, Usable};
 
     const DT: f32 = 0.1;
     const DOOR: &str = "door";
