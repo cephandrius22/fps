@@ -40,13 +40,14 @@ Section 11 has the detail for each phase.
 | Collision | Convex brushes (cuboids, turned boxes, any closed plane set) with axial bevels; axis-aligned box and ray traces; slide, step-up, ground probe, snap-down. Moving bodies slide by offset. | `crates/physics` |
 | Character controller | `Walker`: Quake friction / acceleration / capped air control, jumping, 45 cm steps, slopes up to ~45°. Profiles `WalkSettings::arena()` (fast, air control) and `survival()` (slow, sprint with stamina, head bob); all fields public for custom ones. | `crates/engine/src/walk.rs` |
 | Scripting | Lua 5.4 via `mlua` (vendored), wrapped in `crates/script` (VM host in `lib.rs`, the Lua-facing API in `api.rs`, the world snapshot in `view.rs`). Entity classes are global tables in `assets/scripts/*.lua`, loaded at startup and hot-reloaded (instances keep state). Hooks `on_spawn` / `on_fire` / `on_use` / `on_enter` / `on_tick`; actions `world.fire`, `world.fire_after`, `world.open`, `world.close`, `world.log`, `print`; reads `world.position`, `world.mover`, `world.player`, `world.time` from a snapshot the engine publishes before hooks (`view.rs`). Targets are names or `self`. Sandboxed (no io/os/files), with a per-call instruction budget. | `crates/script`, `crates/engine/src/world/scripting.rs`, `assets/scripts/` |
-| Entities | Flat `Entity` with optional model, collider, mover, trigger, usable, script; generational `EntityId`. The engine owns the `World`. Mover state machine in its own module. Named targets: triggers, buttons and scripts fire a name (queued, at most 64 per tick, with optional delay); movers with that name open or close, scripts get `on_fire`. Doors close after a wait or on fire, and back off instead of crushing. Brushes double as meshes (`Brush::mesh`, world-projected UVs). | `crates/engine/src/world/`, `entity.rs`, `mover.rs`, `collision.rs` |
+| Entities | Flat `Entity` with lists of models and colliders (a map door can be several brushes and textures) and optional mover, trigger, usable, script; generational `EntityId`. The engine owns the `World`. Mover state machine in its own module. Named targets: triggers, buttons and scripts fire a name (queued, at most 64 per tick, with optional delay); movers with that name open or close, scripts get `on_fire`. Doors close after a wait or on fire, and back off instead of crushing. Brushes double as meshes (`Brush::mesh`, world-projected UVs). | `crates/engine/src/world/`, `entity.rs`, `mover.rs`, `collision.rs` |
 | Resources | Asset filesystem (`assets/` discovery), PNG decoding (all color types) to `base::Image`, meshes and textures addressed by generational handles | `crates/base`, `crates/render`, `crates/engine/src/gfx.rs` |
 | Maps | Quake BSP29/BSP2 reader with the BSPX brush list (`crates/bsp`, no engine types; one module per part of the file: lump directory, faces and models, textures, brush list, entity text), converted to meters and Y-up (32 units/m) in `engine/src/map/` (one file each for space, entities, geometry, lighting): per-texture meshes, solid brushes, `func_door` (with Quake's trigger field when untargeted), `func_button`, `trigger_once`/`_multiple`, `func_illusionary`, other brush entities, `info_player_start`, "script" keys; style-0 lightmaps sized exactly as `light` sizes them. Textures by name from `assets/textures/`. Test map source in `maps/`, compiled with `tools/compile-map.sh` (qbsp `-wrbrushes -notex`, vis, light). | `crates/bsp`, `crates/engine/src/map/`, `maps/`, `tools/`, `assets/maps/` |
 | Hot reload | File watcher plus an asset registry. Shaders, textures, the palette and scripts reload; a bad file is rejected and the old version stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
 | Debugging | Logging (`RUST_LOG`), `verify!` asserts, F12 screenshot, `ENGINE_CAPTURE_FRAME=N` capture-and-exit | `crates/base`, `crates/engine/src/debug.rs` |
 | Errors | Typed `thiserror` errors per area; `EngineError` categories for games; `base::chain` for logs | `crates/*/src/error.rs` and per module |
-| Tests | 317 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
+| Tests | 317 tests: unit tests beside the code in every crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation, GPU tests on the compiled test map (doors, a walker on its stairs) and a reference-image test of it. The README's testing section says where each kind lives. | `cargo test` |
+| Documentation | Every crate root opens with what the crate is for and a map of its modules (also in `cargo doc`); every module opens with a header. The README has a crate guide (purpose, dependencies, where to start reading), the architecture, the frame lifecycle and the full Lua API. | `crates/*/src/lib.rs`, `README.md` |
 | CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows with the pinned toolchain. GPU tests run on all three (Linux via Mesa lavapipe); a skip would show as a run warning. | `.github/workflows/ci.yml` |
 | Build config | Toolchain pinned to 1.99.1, lints in `[workspace.lints]`, `publish = false`, dependency debug info reduced to line tables | `rust-toolchain.toml`, `Cargo.toml` |
 
@@ -130,7 +131,7 @@ Original recommendation: **C + SDL3** if studying id's code is part of the fun. 
 Offline tools: .map compiler · lightmap baker · asset converters
 ```
 
-### As built (Phase 0)
+### As built (through Phase 2)
 
 The diagram above is the target. The code maps it onto crates like this, and each crate may only call the crate directly below it:
 
@@ -140,10 +141,10 @@ game ──► engine ──┬──► render ───► wgpu     (Renderer 
                   ├──► script ───► mlua     (Scripting VM box)
                   ├──► bsp ──────► glam     (map loading; Resources box)
                   └──► platform ─► winit    (Platform row)
-base: foundation utilities shared by all    (logging, asserts, Vfs, watcher)
+base: foundation utilities shared by all    (images, handles, Vfs, watcher, logging)
 ```
 
-- The Engine core row lives in `crates/engine`. Today that is the loop, input, the asset registry, debug hooks, the world and entities, and the walker. Collision math (`crates/physics`), the Lua host (`crates/script`) and the Quake map reader (`crates/bsp`) are their own crates beside `render` and `platform`. Audio and navigation will be added the same way.
+- The Engine core row lives in `crates/engine`. Today that is the loop, input, the asset registry, debug hooks, the world and entities (owned by the engine), the walker, and Quake map loading. Collision math (`crates/physics`), the Lua host (`crates/script`) and the Quake map reader (`crates/bsp`) are their own crates beside `render` and `platform`. Audio and navigation will be added the same way.
 - The Game layer is `game/`. It uses only the `engine` API.
 - The filesystem sits in `base::Vfs`, not in the platform layer.
 
