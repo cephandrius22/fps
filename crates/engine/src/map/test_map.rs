@@ -1,5 +1,7 @@
 //! The committed test map (maps/test.map) loaded on a headless GPU:
 //! collision, doors, a walker on its stairs, and a reference image.
+//! Behavior is checked on both compiles, qbsp's .bsp and mapc's .lvl;
+//! the image only on the .bsp, the lit one.
 
 use base::Key;
 use platform::{Event, KeyState};
@@ -18,7 +20,9 @@ use crate::test_util::{assert_matches_reference, headless_with, repo_assets};
 use crate::walk::{WalkSettings, Walker};
 use crate::world::World;
 
-const PATH: &str = "maps/test.bsp";
+/// The test map compiled by ericw-tools (lit) and by mapc (unlit).
+const BSP: &str = "maps/test.bsp";
+const LEVEL: &str = "maps/test.lvl";
 const REFERENCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/reference/test-map.png");
 /// Reference render size: small, so few pixels sit on triangle edges.
 const REFERENCE_SIZE: (u32, u32) = (320, 180);
@@ -26,13 +30,19 @@ const DT: f32 = 1.0 / 60.0;
 const EYE: f32 = 1.6;
 const HALF: Vec3 = Vec3::new(0.3, 0.9, 0.3);
 
-/// Runs `check` on a world holding the test map; skips without a GPU.
-fn with_map(check: impl FnOnce(&mut World, &MapInfo)) {
-    with_map_rendering(|world, info, _| check(world, info));
+/// Runs `check` on a world holding each compile of the test map; skips
+/// without a GPU.
+fn with_map(check: impl Fn(&mut World, &MapInfo)) {
+    for path in [BSP, LEVEL] {
+        // Names the compile when a check fails.
+        eprintln!("checking {path}");
+        with_map_rendering(path, |world, info, _| check(world, info));
+    }
 }
 
-/// As `with_map`, also handing over the (320×180) renderer.
-fn with_map_rendering(check: impl FnOnce(&mut World, &MapInfo, &mut render::Renderer)) {
+/// As `with_map` for the map at `path`, also handing over the (320×180)
+/// renderer.
+fn with_map_rendering(path: &str, check: impl FnOnce(&mut World, &MapInfo, &mut render::Renderer)) {
     let vfs = repo_assets();
     let config = render::RenderConfig {
         internal_width: REFERENCE_SIZE.0,
@@ -50,7 +60,7 @@ fn with_map_rendering(check: impl FnOnce(&mut World, &MapInfo, &mut render::Rend
     };
     let mut world = World::new();
 
-    let info = gfx.load_map(PATH, &mut world).unwrap();
+    let info = gfx.load_map(path, &mut world).unwrap();
     check(&mut world, &info, &mut renderer);
 }
 
@@ -72,7 +82,7 @@ fn reach_north(world: &World, from: Vec3) -> f32 {
 /// parsing to shading.
 #[test]
 fn view_from_the_start_matches_the_reference() {
-    with_map_rendering(|world, info, renderer| {
+    with_map_rendering(BSP, |world, info, renderer| {
         let start = info.start.unwrap();
         let eye = start.feet + Vec3::Y * EYE;
 

@@ -17,7 +17,7 @@ use glam::{DVec2, Vec2, Vec3};
 
 use crate::error::{Result, index_error};
 use crate::reader::{Lump, Lumps, Version, f32_at, i16_at, i32_at, u16_at, u32_at, vec3_at};
-use crate::{Face, Lightmap, Model};
+use level::{Face, Lightmap, Model};
 
 const PLANE_BYTES: usize = 20;
 const VERTEX_BYTES: usize = 12;

@@ -3,8 +3,9 @@
 //! upscaled. A Lua-scripted button inside the room opens a secret panel
 //! (assets/scripts/sandbox.lua).
 //!
-//! Or play a Quake map instead: `cargo run -p game -- maps/test.bsp`
-//! loads it from the asset directory and starts at its player start.
+//! Or play a compiled map instead: `cargo run -p game -- maps/test.lvl`
+//! (mapc) or `maps/test.bsp` (ericw-tools) loads it from the asset
+//! directory and starts at its player start.
 //!
 //! Bindings owned here (walking comes from `Walker`, flying from
 //! `FlyCamera`, F12 screenshots from the engine; README.md lists them
@@ -255,7 +256,7 @@ struct Scene {
 enum Level {
     /// The built-in brush level (game/src/level.rs).
     Sandbox,
-    /// A compiled Quake map, by asset path, e.g. "maps/test.bsp".
+    /// A compiled map, by asset path, e.g. "maps/test.lvl".
     Map(String),
 }
 

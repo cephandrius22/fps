@@ -1,0 +1,21 @@
+[package]
+name = "mapc"
+description = "Map compiler: TrenchBroom .map to the engine's .lvl (brush polygons, CSG, texture mapping, contents)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base.workspace = true
+glam.workspace = true
+level.workspace = true
+log.workspace = true
+mapfile.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bsp.workspace = true
+
+[lints]
+workspace = true

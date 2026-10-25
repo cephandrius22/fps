@@ -1,10 +1,14 @@
-//! Quake maps (.bsp, from ericw-tools) into the world: geometry becomes
-//! meshes, BSPX brushes become collision, lightmaps become one atlas, and
-//! Quake entity classes become engine entities. The only place engine and
-//! `bsp` types meet.
+//! Maps into the world: geometry becomes meshes, brushes become
+//! collision, lightmaps become one atlas, and Quake entity classes
+//! become engine entities. Reads Quake .bsp files (from ericw-tools) and
+//! the engine's own .lvl files (from mapc); both arrive as `level` data,
+//! so everything below is shared. The only place engine and `level`
+//! (or `bsp`) types meet.
 //!
 //! ```text
-//!   .bsp ─► bsp::parse ─┬─ textures ──► geometry.rs: textures/<name>.png
+//!   .bsp ─► bsp::parse ───┐
+//!   .lvl ─► level::read ──┴─► Level
+//!                       ┌─ textures ──► geometry.rs: textures/<name>.png
 //!                       ├─ lightmaps ─► lighting.rs: one atlas texture
 //!                       └─ entities ──► entities.rs ─┬─ meshes (geometry.rs)
 //!                                                    ├─ brushes (geometry.rs)
@@ -23,6 +27,9 @@ mod space;
 mod test_map;
 
 use glam::Vec3;
+
+use base::BoxError;
+use level::Level;
 
 use crate::error::EngineError;
 use crate::gfx::Gfx;
@@ -54,8 +61,8 @@ pub struct MapInfo {
     pub message: Option<String>,
 }
 
-/// Loads a .bsp from the asset directory and spawns its entities into
-/// `world`.
+/// Loads a .bsp or .lvl map from the asset directory and spawns its
+/// entities into `world`.
 pub(crate) fn load(gfx: &mut Gfx, world: &mut World, path: &str) -> Result<MapInfo, EngineError> {
     let load_err = |source| EngineError::Load {
         path: path.to_owned(),
@@ -63,9 +70,12 @@ pub(crate) fn load(gfx: &mut Gfx, world: &mut World, path: &str) -> Result<MapIn
     };
 
     let bytes = gfx.vfs.read(path).map_err(|err| load_err(err.into()))?;
-    let map = bsp::parse(&bytes).map_err(|err| load_err(err.into()))?;
+    let map = read(path, &bytes).map_err(load_err)?;
     if map.models.iter().all(|m| m.brushes.is_empty()) {
-        log::warn!("{path} has no brush list (compile with qbsp -wrbrushes): nothing is solid");
+        log::warn!(
+            "{path} has no collision brushes (for .bsp, compile with qbsp -wrbrushes): \
+             nothing is solid"
+        );
     }
 
     let surfaces: Vec<Surface> = map.textures.iter().map(|t| surface(gfx, t)).collect();
@@ -101,4 +111,24 @@ pub(crate) fn load(gfx: &mut Gfx, world: &mut World, path: &str) -> Result<MapIn
     }
 
     Ok(info)
+}
+
+/// Map file extensions and the reader each needs.
+const BSP_EXTENSION: &str = "bsp";
+const LEVEL_EXTENSION: &str = "lvl";
+
+/// Reads map bytes as level data, choosing the reader by extension.
+fn read(path: &str, bytes: &[u8]) -> Result<Level, BoxError> {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase);
+
+    match extension.as_deref() {
+        Some(BSP_EXTENSION) => Ok(bsp::parse(bytes)?),
+        Some(LEVEL_EXTENSION) => Ok(level::read(bytes)?),
+        _ => Err(
+            format!("unknown map format (expected .{BSP_EXTENSION} or .{LEVEL_EXTENSION})").into(),
+        ),
+    }
 }

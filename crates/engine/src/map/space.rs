@@ -25,7 +25,7 @@ pub(super) fn to_engine_direction(q: Vec3) -> Vec3 {
 }
 
 /// The axis swap is a rotation, so only the distance scales.
-pub(super) fn to_engine_plane(p: bsp::Plane) -> Plane {
+pub(super) fn to_engine_plane(p: level::Plane) -> Plane {
     Plane {
         normal: to_engine_direction(p.normal),
         dist: p.dist / UNITS_PER_METER,
@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn planes_keep_the_same_points() {
-        let quake = bsp::Plane {
+        let quake = level::Plane {
             normal: Vec3::Z,
             dist: 64.0,
         };

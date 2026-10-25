@@ -46,8 +46,8 @@ pub(super) enum Spawn {
 
 /// The engine pieces for a brush entity with drawable `models`.
 pub(super) fn brush_entity(
-    entity: &bsp::Entity,
-    model: &bsp::Model,
+    entity: &level::Entity,
+    model: &level::Model,
     models: Vec<Model>,
 ) -> Vec<Spawn> {
     let base = Entity {
@@ -108,7 +108,7 @@ pub(super) fn brush_entity(
 /// A func_door: slides along its "angle" by its own size less "lip".
 /// Without a "targetname" Quake opens doors on approach, so it gets a
 /// name and a trigger field around it.
-fn door(entity: &bsp::Entity, model: &bsp::Model, door: Entity) -> Vec<Entity> {
+fn door(entity: &level::Entity, model: &level::Model, door: Entity) -> Vec<Entity> {
     let mover = door_mover(entity, model);
     if door.name.is_some() {
         return vec![Entity {
@@ -135,7 +135,7 @@ fn door(entity: &bsp::Entity, model: &bsp::Model, door: Entity) -> Vec<Entity> {
 }
 
 /// Quake func_door travel: `|direction · size| − lip` along "angle".
-fn door_mover(entity: &bsp::Entity, model: &bsp::Model) -> Mover {
+fn door_mover(entity: &level::Entity, model: &level::Model) -> Mover {
     let direction = move_direction(number(entity, "angle", 0.0));
     let size = model.maxs - model.mins;
     let distance = direction.dot(size).abs() - number(entity, "lip", DOOR_LIP);
@@ -166,7 +166,7 @@ fn move_direction(angle: f32) -> Vec3 {
     Vec3::new(cos, sin, 0.0)
 }
 
-pub(super) fn player_start(entity: &bsp::Entity) -> PlayerStart {
+pub(super) fn player_start(entity: &level::Entity) -> PlayerStart {
     let origin = vector(entity, "origin");
     let feet = origin - Vec3::Z * PLAYER_ORIGIN_HEIGHT;
 
@@ -177,7 +177,7 @@ pub(super) fn player_start(entity: &bsp::Entity) -> PlayerStart {
 }
 
 /// A numeric key, or `default` when missing or unparsable.
-fn number(entity: &bsp::Entity, key: &str, default: f32) -> f32 {
+fn number(entity: &level::Entity, key: &str, default: f32) -> f32 {
     entity
         .get(key)
         .and_then(|v| v.trim().parse().ok())
@@ -185,7 +185,7 @@ fn number(entity: &bsp::Entity, key: &str, default: f32) -> f32 {
 }
 
 /// A "x y z" key; zero when missing or malformed.
-fn vector(entity: &bsp::Entity, key: &str) -> Vec3 {
+fn vector(entity: &level::Entity, key: &str) -> Vec3 {
     let parts: Vec<f32> = entity
         .get(key)
         .unwrap_or_default()
@@ -206,31 +206,15 @@ mod tests {
 
     const EPS: f32 = 1e-5;
 
-    /// Entity from Quake key/value text.
-    fn entity(pairs: &str) -> bsp::Entity {
-        let text = format!("{{\n{pairs}\n}}");
-        let bytes = test_bsp(&text);
-        bsp::parse(&bytes).unwrap().entities.remove(0)
-    }
-
-    /// Smallest valid BSP29 holding only `entities` (every other lump
-    /// empty).
-    fn test_bsp(entities: &str) -> Vec<u8> {
-        const LUMPS: u32 = 15;
-        let header = 4 + LUMPS * 8;
-        let mut bytes = 29u32.to_le_bytes().to_vec();
-        for lump in 0..LUMPS {
-            let len = if lump == 0 { entities.len() as u32 } else { 0 };
-            bytes.extend(header.to_le_bytes());
-            bytes.extend(len.to_le_bytes());
-        }
-        bytes.extend(entities.as_bytes());
-        bytes
+    /// Entity from key/value pairs.
+    fn entity(pairs: &[(&str, &str)]) -> level::Entity {
+        let fields = pairs.iter().map(|&(k, v)| (k.into(), v.into()));
+        level::Entity::new(fields.collect())
     }
 
     /// A 64 × 16 × 112 unit door model.
-    fn door_model() -> bsp::Model {
-        bsp::Model {
+    fn door_model() -> level::Model {
+        level::Model {
             mins: Vec3::new(-32.0, 0.0, 0.0),
             maxs: Vec3::new(32.0, 16.0, 112.0),
             faces: Vec::new(),
@@ -253,14 +237,14 @@ mod tests {
 
     #[test]
     fn door_moves_its_size_less_lip_along_its_angle() {
-        let up = door_mover(&entity("\"angle\" \"-1\""), &door_model());
+        let up = door_mover(&entity(&[("angle", "-1")]), &door_model());
         // 112 tall − 8 lip = 104 units up.
         assert!((up.travel - Vec3::Y * 104.0 / UNITS_PER_METER).length() < EPS);
         assert_eq!(up.speed, DOOR_SPEED / UNITS_PER_METER);
         assert_eq!(up.close, Close::After(DOOR_WAIT));
 
         let east = door_mover(
-            &entity("\"angle\" \"0\" \"lip\" \"4\" \"wait\" \"-1\""),
+            &entity(&[("angle", "0"), ("lip", "4"), ("wait", "-1")]),
             &door_model(),
         );
         assert!((east.travel - Vec3::X * 60.0 / UNITS_PER_METER).length() < EPS);
@@ -269,7 +253,7 @@ mod tests {
 
     #[test]
     fn untargeted_door_gets_a_name_and_a_trigger_field() {
-        let quake = entity("\"classname\" \"func_door\" \"model\" \"*5\"");
+        let quake = entity(&[("classname", "func_door"), ("model", "*5")]);
         let spawned = door(&quake, &door_model(), Entity::default());
 
         let [door, field] = &spawned[..] else {
@@ -284,7 +268,7 @@ mod tests {
 
     #[test]
     fn targeted_door_waits_to_be_fired() {
-        let quake = entity("\"classname\" \"func_door\" \"targetname\" \"door1\"");
+        let quake = entity(&[("classname", "func_door"), ("targetname", "door1")]);
         let named = Entity {
             name: Some("door1".into()),
             ..Default::default()
@@ -297,7 +281,7 @@ mod tests {
 
     #[test]
     fn player_start_puts_feet_on_the_floor() {
-        let start = player_start(&entity("\"origin\" \"0 -192 24\" \"angle\" \"90\""));
+        let start = player_start(&entity(&[("origin", "0 -192 24"), ("angle", "90")]));
 
         assert!((start.feet - Vec3::new(0.0, 0.0, 6.0)).length() < EPS);
         assert!(start.yaw.abs() < EPS);
@@ -305,7 +289,7 @@ mod tests {
 
     #[test]
     fn malformed_numbers_fall_back_to_defaults() {
-        let quake = entity("\"speed\" \"fast\" \"origin\" \"1 2\"");
+        let quake = entity(&[("speed", "fast"), ("origin", "1 2")]);
 
         assert_eq!(number(&quake, "speed", DOOR_SPEED), DOOR_SPEED);
         assert_eq!(vector(&quake, "origin"), Vec3::ZERO);

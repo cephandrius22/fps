@@ -1,0 +1,13 @@
+[package]
+name = "level"
+description = "Level data model shared by every map format, and the engine's own .lvl file format."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

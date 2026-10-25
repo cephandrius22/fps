@@ -8,43 +8,9 @@
 //! }
 //! ```
 
+use level::Entity;
+
 use crate::error::{BspError, Result};
-
-/// One entity's key/value pairs, in file order.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Entity {
-    fields: Vec<(String, String)>,
-}
-
-impl Entity {
-    /// Value of `key`; the last one wins if a key repeats.
-    pub fn get(&self, key: &str) -> Option<&str> {
-        self.fields
-            .iter()
-            .rev()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
-    }
-
-    /// The `classname`, or "" if missing.
-    pub fn classname(&self) -> &str {
-        self.get("classname").unwrap_or_default()
-    }
-
-    /// Brush model index from `"model" "*N"`. The world is model 0
-    /// without the key.
-    pub fn model(&self) -> Option<usize> {
-        if self.classname() == "worldspawn" {
-            return Some(0);
-        }
-        self.get("model")?.strip_prefix('*')?.parse().ok()
-    }
-
-    /// Every pair, in file order.
-    pub fn fields(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.fields.iter().map(|(k, v)| (k.as_str(), v.as_str()))
-    }
-}
 
 /// Parses the entity text. Strings have no escapes; anything outside
 /// quotes other than braces and whitespace is an error.
@@ -57,7 +23,7 @@ pub(crate) fn parse(text: &str) -> Result<Vec<Entity>> {
             return Err(tokens.error("expected '{'"));
         }
 
-        let mut entity = Entity::default();
+        let mut fields = Vec::new();
         loop {
             match tokens.next()? {
                 Some(Token::Close) => break,
@@ -65,12 +31,12 @@ pub(crate) fn parse(text: &str) -> Result<Vec<Entity>> {
                     let Some(Token::Text(value)) = tokens.next()? else {
                         return Err(tokens.error("expected a value"));
                     };
-                    entity.fields.push((key.to_owned(), value.to_owned()));
+                    fields.push((key.to_owned(), value.to_owned()));
                 }
                 _ => return Err(tokens.error("expected a key or '}'")),
             }
         }
-        entities.push(entity);
+        entities.push(Entity::new(fields));
     }
 
     Ok(entities)
@@ -163,7 +129,6 @@ mod tests {
 
         assert_eq!(entities[0].model(), Some(0));
         assert_eq!(entities[1].model(), Some(3));
-        assert_eq!(Entity::default().model(), None);
     }
 
     #[test]

@@ -1,8 +1,9 @@
 //! Reads the committed test map (maps/test.map, compiled by
 //! tools/compile-map.sh) and checks what the engine relies on.
 
-use bsp::{Bsp, Contents, Version};
+use bsp::Version;
 use glam::Vec3;
+use level::{Contents, Level};
 
 const EPS: f32 = 1e-3;
 
@@ -12,7 +13,7 @@ const LIGHTING_ENTRY: usize = 4 + 8 * 8;
 /// ericw-tools aligns each face's lightmap to this many bytes.
 const LIGHTMAP_ALIGN: usize = 4;
 
-fn test_map() -> Bsp {
+fn test_map() -> Level {
     bsp::parse(&std::fs::read(PATH).unwrap()).unwrap()
 }
 
@@ -20,7 +21,8 @@ fn test_map() -> Bsp {
 fn reads_version_textures_and_models() {
     let map = test_map();
 
-    assert_eq!(map.version, Version::Bsp29);
+    let bytes = std::fs::read(PATH).unwrap();
+    assert_eq!(bsp::version(&bytes).unwrap(), Version::Bsp29);
     let names: Vec<_> = map.textures.iter().map(|t| t.name.as_str()).collect();
     assert!(
         names.contains(&"floor") && names.contains(&"crate"),

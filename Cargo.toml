@@ -13,6 +13,9 @@ base = { path = "crates/base" }
 bsp = { path = "crates/bsp" }
 physics = { path = "crates/physics" }
 platform = { path = "crates/platform" }
+level = { path = "crates/level" }
+mapfile = { path = "crates/mapfile" }
+mapc = { path = "crates/mapc" }
 render = { path = "crates/render" }
 script = { path = "crates/script" }
 engine = { path = "crates/engine" }

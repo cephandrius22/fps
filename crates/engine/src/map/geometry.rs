@@ -16,8 +16,6 @@ use crate::collision::Brush;
 use crate::entity::Model;
 use crate::gfx::{Gfx, MeshData, TextureHandle, Vertex};
 
-/// Textures that mark brushes for the compiler or the game, never drawn.
-const TOOL_TEXTURES: [&str; 6] = ["trigger", "clip", "skip", "hint", "origin", "null"];
 /// Texture size assumed when neither the map nor a PNG gives one.
 const DEFAULT_TEXELS: f32 = 64.0;
 const WHITE: [f32; 4] = [1.0; 4];
@@ -35,9 +33,9 @@ pub(super) enum Surface {
 }
 
 /// How a texture's faces are drawn: loads `textures/<name>.png`.
-pub(super) fn surface(gfx: &mut Gfx, texture: &bsp::Texture) -> Surface {
+pub(super) fn surface(gfx: &mut Gfx, texture: &level::Texture) -> Surface {
     let name = texture.name.to_lowercase();
-    if TOOL_TEXTURES.contains(&name.as_str()) {
+    if level::is_tool_texture(&name) {
         return Surface::Hidden;
     }
 
@@ -68,7 +66,7 @@ pub(super) fn surface(gfx: &mut Gfx, texture: &bsp::Texture) -> Surface {
 pub(super) fn meshes(
     gfx: &mut Gfx,
     index: usize,
-    model: &bsp::Model,
+    model: &level::Model,
     surfaces: &[Surface],
     lighting: Option<&Lighting>,
 ) -> Vec<Model> {
@@ -105,7 +103,7 @@ pub(super) fn meshes(
 /// Adds a convex face as a triangle fan. Collinear corners (common in
 /// Quake faces) only add zero-area triangles. `light_uvs`, if any, are
 /// the corners' lightmap atlas coordinates.
-fn append_face(data: &mut MeshData, face: &bsp::Face, texels: Vec2, light_uvs: Option<&[Vec2]>) {
+fn append_face(data: &mut MeshData, face: &level::Face, texels: Vec2, light_uvs: Option<&[Vec2]>) {
     let base = data.vertices.len() as u32;
     let normal = to_engine_direction(face.normal).to_array();
     let light_uv = |i: usize| light_uvs.map_or(Vec2::ZERO, |uvs| uvs[i]);
@@ -131,7 +129,7 @@ fn append_face(data: &mut MeshData, face: &bsp::Face, texels: Vec2, light_uvs: O
 
 /// Solid brushes of a model, in engine space. Liquids are not solid;
 /// a degenerate brush is logged and skipped.
-pub(super) fn colliders(model: &bsp::Model) -> Vec<Brush> {
+pub(super) fn colliders(model: &level::Model) -> Vec<Brush> {
     model
         .brushes
         .iter()
@@ -157,14 +155,14 @@ mod tests {
 
     /// A 64-unit square on the Quake floor (z = 0), facing up, wound
     /// counter-clockwise seen from above; texels equal Quake x, y.
-    fn floor_face() -> bsp::Face {
+    fn floor_face() -> level::Face {
         let points = vec![
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(64.0, 0.0, 0.0),
             Vec3::new(64.0, 64.0, 0.0),
             Vec3::new(0.0, 64.0, 0.0),
         ];
-        bsp::Face {
+        level::Face {
             texture: 0,
             normal: Vec3::Z,
             texels: points.iter().map(|p| Vec2::new(p.x, p.y)).collect(),
@@ -173,7 +171,7 @@ mod tests {
         }
     }
 
-    fn quake_brush(contents: bsp::Contents, mins: Vec3, maxs: Vec3) -> bsp::Brush {
+    fn quake_brush(contents: level::Contents, mins: Vec3, maxs: Vec3) -> level::Brush {
         let axial = [
             (Vec3::X, maxs.x),
             (Vec3::NEG_X, -mins.x),
@@ -182,12 +180,12 @@ mod tests {
             (Vec3::Z, maxs.z),
             (Vec3::NEG_Z, -mins.z),
         ];
-        bsp::Brush {
+        level::Brush {
             contents,
             mins,
             maxs,
             planes: axial
-                .map(|(normal, dist)| bsp::Plane { normal, dist })
+                .map(|(normal, dist)| level::Plane { normal, dist })
                 .to_vec(),
         }
     }
@@ -226,18 +224,18 @@ mod tests {
 
     #[test]
     fn only_solid_brushes_collide_and_they_move_to_engine_space() {
-        let model = bsp::Model {
+        let model = level::Model {
             mins: Vec3::ZERO,
             maxs: Vec3::splat(64.0),
             faces: Vec::new(),
             brushes: vec![
                 quake_brush(
-                    bsp::Contents::Solid,
+                    level::Contents::Solid,
                     Vec3::ZERO,
                     Vec3::new(32.0, 32.0, 64.0),
                 ),
-                quake_brush(bsp::Contents::Water, Vec3::ZERO, Vec3::splat(64.0)),
-                quake_brush(bsp::Contents::Clip, Vec3::ZERO, Vec3::splat(32.0)),
+                quake_brush(level::Contents::Water, Vec3::ZERO, Vec3::splat(64.0)),
+                quake_brush(level::Contents::Clip, Vec3::ZERO, Vec3::splat(32.0)),
             ],
         };
 

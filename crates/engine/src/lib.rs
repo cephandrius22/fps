@@ -5,10 +5,11 @@
 //! ```text
 //!   game ──► engine ──┬──► render ───► wgpu
 //!                     ├──► physics ──► (glam only)
-//!                     ├──► bsp ──────► (glam only; Quake map files)
+//!                     ├──► bsp ──────► level (Quake .bsp → level data)
 //!                     ├──► script ───► mlua (Lua 5.4)
 //!                     └──► platform ─► winit
-//!   (base: foundation utilities, usable by all)
+//!   (level: the map data model every format becomes, and .lvl files;
+//!    base: foundation utilities, usable by all)
 //! ```
 //!
 //! Modules by role (start here, then read `game/src/main.rs` to see the
@@ -26,7 +27,7 @@
 //!   player     walk.rs     Walker: the character controller and its profiles
 //!              fly.rs      FlyCamera: noclip flying
 //!              look.rs     mouse and arrow-key look, shared by both
-//!   maps       map/        Quake .bsp → meshes, brushes, lightmaps, entities
+//!   maps       map/        .bsp / .lvl → meshes, brushes, lightmaps, entities
 //!              atlas.rs    lightmap atlas packing
 //!   running    app.rs      the main loop
 //!              assets.rs   asset registry and hot reload

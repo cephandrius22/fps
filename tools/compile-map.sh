@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Compiles maps/<name>.map to assets/maps/<name>.bsp with ericw-tools.
+# For the engine's own .lvl format, use mapc instead:
+#
+#   cargo run -p mapc -- maps/<name>.map assets/maps/<name>.lvl
 #
 #   ERICW_TOOLS=/path/to/ericw-tools/build tools/compile-map.sh test
 #

@@ -1,5 +1,5 @@
 // Engine test map. Generated once; edit freely (e.g. in TrenchBroom).
-// Quake units, Z up. Rebuild with tools/compile-map.sh.
+// Quake units, Z up. Rebuild with mapc (.lvl) and tools/compile-map.sh (.bsp).
 {
 "classname" "worldspawn"
 "message" "Engine test map"

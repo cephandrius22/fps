@@ -17,7 +17,7 @@ use glam::Vec3;
 
 use crate::error::{BspError, Result, index_error};
 use crate::reader::{Cursor, Lumps, name};
-use crate::{Brush, Contents, Plane};
+use level::{Brush, Contents, Plane};
 
 const MAGIC: &[u8; 4] = b"BSPX";
 const LUMP_NAME_BYTES: usize = 24;

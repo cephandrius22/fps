@@ -43,7 +43,7 @@ pub(super) struct Layout {
 impl Layout {
     /// Atlas UVs for a face's corners: its own lightmap, or the black
     /// luxel for a face light never reached.
-    pub fn uvs(&self, model: usize, face_index: usize, face: &bsp::Face) -> Vec<Vec2> {
+    pub fn uvs(&self, model: usize, face_index: usize, face: &level::Face) -> Vec<Vec2> {
         let lit = face
             .lightmap
             .as_ref()
@@ -62,7 +62,7 @@ impl Layout {
 
 /// Packs and uploads the map's lightmaps. None for an unlit map, or
 /// (logged) if the atlas cannot be uploaded.
-pub(super) fn lighting(gfx: &mut Gfx, map: &bsp::Bsp, path: &str) -> Option<Lighting> {
+pub(super) fn lighting(gfx: &mut Gfx, map: &level::Level, path: &str) -> Option<Lighting> {
     let (image, layout) = pack(map)?;
     let texture = gfx
         .create_lightmap(&image)
@@ -74,8 +74,8 @@ pub(super) fn lighting(gfx: &mut Gfx, map: &bsp::Bsp, path: &str) -> Option<Ligh
 
 /// Every face lightmap, then one black luxel, packed into one atlas
 /// image. None when no face has a lightmap (the map was never lit).
-fn pack(map: &bsp::Bsp) -> Option<(Image, Layout)> {
-    let lit: Vec<((usize, usize), &bsp::Lightmap)> = map
+fn pack(map: &level::Level) -> Option<(Image, Layout)> {
+    let lit: Vec<((usize, usize), &level::Lightmap)> = map
         .models
         .iter()
         .enumerate()
@@ -132,9 +132,9 @@ mod tests {
 
     /// A triangle face, lit by a `width × height` lightmap of `value`
     /// (None: unlit).
-    fn face(lightmap: Option<(u32, u32, u8)>) -> bsp::Face {
+    fn face(lightmap: Option<(u32, u32, u8)>) -> level::Face {
         let points = vec![Vec3::ZERO, Vec3::X, Vec3::Y];
-        let lightmap = lightmap.map(|(width, height, value)| bsp::Lightmap {
+        let lightmap = lightmap.map(|(width, height, value)| level::Lightmap {
             width,
             height,
             luxels: vec![value; (width * height) as usize],
@@ -146,7 +146,7 @@ mod tests {
             ],
         });
 
-        bsp::Face {
+        level::Face {
             texture: 0,
             normal: Vec3::Z,
             texels: vec![Vec2::ZERO; points.len()],
@@ -155,11 +155,10 @@ mod tests {
         }
     }
 
-    fn map(faces: Vec<bsp::Face>) -> bsp::Bsp {
-        bsp::Bsp {
-            version: bsp::Version::Bsp29,
+    fn map(faces: Vec<level::Face>) -> level::Level {
+        level::Level {
             textures: Vec::new(),
-            models: vec![bsp::Model {
+            models: vec![level::Model {
                 mins: Vec3::ZERO,
                 maxs: Vec3::ONE,
                 faces,

@@ -1,4 +1,4 @@
--- Entity classes used by the Quake maps in assets/maps/. A map entity
+-- Entity classes used by the maps in assets/maps/. A map entity
 -- picks one with a "script" key, e.g. "script" "MapGreeter" on a
 -- trigger brush in maps/test.map.
 

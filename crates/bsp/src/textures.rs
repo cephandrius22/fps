@@ -5,9 +5,9 @@
 //!   [count] count × offset (−1 = no header) … [name: 16][width][height][4 mip offsets]
 //! ```
 
-use crate::Texture;
 use crate::error::{BspError, Result};
 use crate::reader::{Cursor, name, u32_at};
+use level::Texture;
 
 const HEADER_BYTES: usize = 24;
 const NAME_BYTES: usize = 16;
