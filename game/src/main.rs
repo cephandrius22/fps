@@ -1,6 +1,7 @@
 //! Sandbox: walk (or fly) around a brush-built test level with stairs,
 //! ramps, crates and a room behind a sliding door, in fog, at 640×360
-//! upscaled.
+//! upscaled. A Lua-scripted button inside the room opens a secret panel
+//! (assets/scripts/sandbox.lua).
 //!
 //! Bindings owned here (walking comes from `Walker`, flying from
 //! `FlyCamera`, F12 screenshots from the engine; README.md lists them
@@ -16,8 +17,9 @@
 //! F4           movement profile: survival (start) ↔ arena
 //! ```
 //!
-//! Edit assets/shaders/*.wgsl, assets/textures/*.png or
-//! assets/palettes/*.png while running to see them reload.
+//! Edit assets/shaders/*.wgsl, assets/textures/*.png,
+//! assets/palettes/*.png or assets/scripts/*.lua while running to see
+//! them reload.
 
 mod level;
 mod shapes;
@@ -234,7 +236,6 @@ impl Spin {
 
 /// Resources created in `init`.
 struct Scene {
-    world: World,
     cube: MeshHandle,
 }
 
@@ -275,36 +276,32 @@ impl Sandbox {
 }
 
 impl Game for Sandbox {
-    fn init(&mut self, gfx: &mut Gfx) -> Result<(), BoxError> {
+    fn init(&mut self, gfx: &mut Gfx, world: &mut World) -> Result<(), BoxError> {
         let textures = level::Textures {
             stone: gfx.load_texture("textures/floor.png")?,
             wood: gfx.load_texture("textures/crate.png")?,
         };
         gfx.load_palette("palettes/default.png")?;
+        level::build(gfx, world, &textures);
 
         self.scene = Some(Scene {
-            world: level::build(gfx, &textures),
             cube: gfx.create_mesh(&shapes::cube(Tint::PerFace)),
         });
         Ok(())
     }
 
     fn tick(&mut self, tick: &mut Tick) {
-        let Some(scene) = &mut self.scene else {
-            return;
-        };
-
         Self::handle_cursor(tick);
         self.view.handle_keys(tick);
-        self.player.handle_keys(tick, &scene.world);
+        self.player.handle_keys(tick, tick.world);
 
         // Player first, then the world reacts to where they ended up.
-        let body = self.player.update(tick, &scene.world);
-        scene.world.tick(tick.dt, body);
+        let body = self.player.update(tick, tick.world);
+        tick.world.tick(tick.dt, body);
 
         if tick.input.was_pressed(USE_KEY) {
             let movement = &self.player.movement;
-            scene.world.use_from(movement.eye(), movement.forward());
+            tick.world.use_from(movement.eye(), movement.forward());
         }
 
         self.spin.advance(tick.dt);
@@ -319,7 +316,7 @@ impl Game for Sandbox {
         frame.fog = self.view.fog;
         frame.quantize = self.view.quantize;
 
-        scene.world.draw(frame, frame.alpha);
+        // The engine draws the world's entities; only the cube is extra.
         frame.draw_mesh(scene.cube, self.spin.transform(frame.alpha));
     }
 }

@@ -1,16 +1,20 @@
 //! Entities: one flat struct with optional components. A crate is a
 //! model plus a collider; a door adds a mover; a button adds `Usable`.
 //!
-//! Entities talk by name, as in Quake's target / targetname: a trigger
-//! or button fires a target name, and every entity with that `name`
-//! reacts (a mover opens or closes).
+//! Entities talk by name, as in Quake's target / targetname: a trigger,
+//! button or script fires a target name, and every entity with that
+//! `name` reacts (a mover opens or closes, a script gets `on_fire`).
 //!
 //! ```text
 //!   button ── Usable { target: "door1" } ──┐
 //!   trigger ─ Trigger { target: "door1" } ─┤ fire "door1"
+//!   script ── world.fire("door1") ─────────┤
 //!                                          ▼
 //!                     door { name: "door1", mover }
 //! ```
+//!
+//! `script` names a Lua class (a global table in `assets/scripts/*.lua`)
+//! whose hooks run on the entity's events; see the `script` crate docs.
 
 use glam::{Quat, Vec3};
 
@@ -38,6 +42,10 @@ pub struct Entity {
     pub trigger: Option<Trigger>,
     /// Fires a target when the player uses it (e.g. a button).
     pub usable: Option<Usable>,
+    /// Lua class running this entity's behavior, e.g. "SecretButton".
+    /// Its hooks (`on_spawn`, `on_fire`, `on_use`, `on_enter`,
+    /// `on_tick`) add to the components above. Use needs a collider.
+    pub script: Option<String>,
 }
 
 impl Default for Entity {
@@ -51,6 +59,7 @@ impl Default for Entity {
             mover: None,
             trigger: None,
             usable: None,
+            script: None,
         }
     }
 }
@@ -86,13 +95,14 @@ pub enum Close {
     OnFire,
 }
 
-/// A volume that fires `target` when the player enters it.
+/// A volume that fires `target` (and the entity's script `on_enter`)
+/// when the player enters it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trigger {
     /// Volume, relative to the entity's position.
     pub volume: Aabb,
-    /// Name to fire.
-    pub target: String,
+    /// Name to fire; None when only the script reacts.
+    pub target: Option<String>,
     /// Fire once ever, or on every entry.
     pub repeat: Repeat,
 }
@@ -107,9 +117,10 @@ pub enum Repeat {
 }
 
 /// Fires `target` when the player presses use while looking at the
-/// entity's collider, within reach.
+/// entity's collider, within reach. (A scripted entity is usable even
+/// without this: it gets `on_use`.)
 #[derive(Clone, Debug, PartialEq)]
 pub struct Usable {
     /// Name to fire.
-    pub target: String,
+    pub target: Option<String>,
 }

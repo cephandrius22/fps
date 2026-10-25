@@ -88,6 +88,34 @@ impl Vfs {
         std::fs::read_to_string(&full).map_err(|source| VfsError::Read { path: full, source })
     }
 
+    /// Asset paths of the files in `dir` ending in `.{extension}`, sorted,
+    /// e.g. `list("scripts", "lua")` → ["scripts/a.lua", "scripts/b.lua"].
+    /// Not recursive. A missing directory lists nothing.
+    pub fn list(&self, dir: &str, extension: &str) -> Result<Vec<String>, VfsError> {
+        let full = self.root.join(dir);
+        if !full.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let read_err = |source| VfsError::Read {
+            path: full.clone(),
+            source,
+        };
+        let mut paths = Vec::new();
+        for entry in std::fs::read_dir(&full).map_err(read_err)? {
+            let path = entry.map_err(read_err)?.path();
+            let matches = path.extension().is_some_and(|ext| ext == extension);
+            if !matches || !path.is_file() {
+                continue;
+            }
+            paths.extend(self.asset_path(&path));
+        }
+
+        // Sorted, so load order is the same on every machine.
+        paths.sort();
+        Ok(paths)
+    }
+
     /// OS path → asset path, e.g. "/…/assets/shaders/a.wgsl" → "shaders/a.wgsl".
     /// None for paths outside the root.
     pub fn asset_path(&self, os_path: &Path) -> Option<String> {
@@ -120,6 +148,20 @@ mod tests {
         std::fs::write(root.join("shaders").join("a.wgsl"), "// a").unwrap();
 
         Vfs::new(root).unwrap()
+    }
+
+    #[test]
+    fn list_finds_matching_files_sorted() {
+        let vfs = fixture("vfs-list");
+        let shaders = vfs.root().join("shaders");
+        std::fs::write(shaders.join("0.wgsl"), "").unwrap();
+        std::fs::write(shaders.join("notes.txt"), "").unwrap();
+
+        assert_eq!(
+            vfs.list("shaders", "wgsl").unwrap(),
+            ["shaders/0.wgsl", "shaders/a.wgsl"]
+        );
+        assert!(vfs.list("missing", "wgsl").unwrap().is_empty());
     }
 
     #[test]

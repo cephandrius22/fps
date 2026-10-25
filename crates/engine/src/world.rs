@@ -1,31 +1,46 @@
-//! The world: entities, the solid geometry they collide with, and the
-//! per-tick rules that run them (movers, triggers, use).
+//! The world: entities, the solid geometry they collide with, their
+//! scripts, and the per-tick rules that run them (movers, triggers, use).
 //!
 //! ```text
 //!   Game::tick ─► walker.update(&world) ─► world.tick(dt, player box)
 //!                                             ├─ movers: slide, unless
 //!                                             │  the player is in the way
-//!                                             └─ triggers: player entered?
-//!                                                └─► fire(target) ─► movers
-//!   Game::draw ─► world.draw(frame)   every entity model, interpolated
+//!                                             ├─ triggers: player entered? ─► on_enter
+//!                                             ├─ scripts: on_tick
+//!                                             └─ fire queue: due names ─► movers,
+//!                                                on_fire ─► scripts may queue more
+//!   engine ─► world.draw(frame)   every entity model, interpolated
 //! ```
 //!
-//! The game owns its `World`, like it owns its camera. Static level
-//! geometry is entities too (a model plus a collider), or invisible
-//! clip brushes via `add_brush`.
+//! Firing is queued, not immediate: `fire`, triggers, buttons and
+//! scripts all add to one queue that `tick` drains, at most
+//! `MAX_FIRES_PER_TICK` at a time, so a script that fires its own name
+//! cannot hang the game.
+//!
+//! The engine owns the `World`, loads scripts into it, and draws it; the
+//! game spawns entities and advances it. Static level geometry is
+//! entities too (a model plus a collider), or invisible clip brushes via
+//! `add_brush`.
 
 use base::{SlotId, Slots};
 use glam::{Mat4, Vec3};
 use physics::BodyId;
+use script::{Command, Hook, Instance, ScriptError, Vm};
 
 use crate::collision::{Aabb, Brush, Trace};
 use crate::entity::{Close, Entity, Mover, Repeat};
+use crate::error::EngineError;
 use crate::gfx::Frame;
 
 /// How far the player can reach to use something, meters.
 pub const USE_REACH: f32 = 2.0;
 /// Movers shorter than this (meters) arrive instantly.
 const MIN_TRAVEL: f32 = 1e-4;
+/// Fires handled per tick; the rest wait for the next. Stops a script
+/// that fires its own name from looping forever within one tick.
+const MAX_FIRES_PER_TICK: usize = 64;
+/// Log target for script output: `RUST_LOG=script=debug` and the like.
+const SCRIPT_LOG: &str = "script";
 
 /// Handle to an entity in a [`World`]. Detects use after despawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -73,13 +88,24 @@ struct Slot {
     inside: bool,
     /// A `Repeat::Once` trigger has fired.
     spent: bool,
+    /// The entity's script state, if it has a script that loaded.
+    instance: Option<Instance>,
 }
 
-/// Entities and solid geometry.
+/// A name waiting to be fired.
+struct Pending {
+    target: String,
+    /// Seconds left; due at 0 or below.
+    delay: f32,
+}
+
+/// Entities, solid geometry and scripts.
 #[derive(Default)]
 pub struct World {
     physics: physics::World,
     entities: Slots<Slot>,
+    vm: Vm,
+    pending: Vec<Pending>,
 }
 
 impl World {
@@ -93,13 +119,19 @@ impl World {
         self.physics.add(brush.0);
     }
 
-    /// Adds an entity. Its collider, if any, becomes solid at once.
+    /// Adds an entity. Its collider, if any, becomes solid at once; its
+    /// script, if any, gets an instance and `on_spawn`. A script class
+    /// that does not exist is logged, and the entity spawns without it.
     pub fn spawn(&mut self, entity: Entity) -> EntityId {
         let body = entity.collider.as_ref().map(|collider| {
             let body = self.physics.add(collider.0.clone());
             self.physics.set_offset(body, entity.position);
             body
         });
+        let instance = entity
+            .script
+            .as_deref()
+            .and_then(|class| self.instantiate(class, entity.name.as_deref()));
 
         let slot = Slot {
             spawn: entity.position,
@@ -112,8 +144,15 @@ impl World {
             inside: false,
             spent: false,
             entity,
+            instance,
         };
-        EntityId(self.entities.insert(slot))
+        let id = EntityId(self.entities.insert(slot));
+
+        if let Some(instance) = &self.entities.get(id.0).and_then(|s| s.instance.as_ref()) {
+            run_hook(&mut self.vm, instance, Hook::Spawn);
+        }
+        self.absorb_commands();
+        id
     }
 
     /// Removes an entity and its collider. False if already gone.
@@ -158,49 +197,47 @@ impl World {
         }
     }
 
-    /// Fires `target`: every entity with that name reacts. Movers open,
-    /// or close if open and `Close::OnFire`.
+    /// Queues `target` to fire on the next `tick`: every entity with that
+    /// name then reacts. Movers open (or close, if open and
+    /// `Close::OnFire`); scripts get `on_fire`.
     pub fn fire(&mut self, target: &str) {
-        let mut matched = false;
-
-        for (_, slot) in self.entities.iter_mut() {
-            if slot.entity.name.as_deref() != Some(target) {
-                continue;
-            }
-            matched = true;
-
-            if let Some(mover) = &slot.entity.mover {
-                slot.mover.fire(mover.close);
-            }
-        }
-
-        if !matched {
-            log::warn!("fired {target:?}, but no entity has that name");
-        }
+        self.fire_after(target, 0.0);
     }
 
-    /// The player pressed use, looking along `direction` from `eye`.
-    /// Fires the target of the first usable entity within
-    /// [`USE_REACH`]. True if something was used.
+    /// As [`fire`](Self::fire), `delay` seconds later.
+    pub fn fire_after(&mut self, target: &str, delay: f32) {
+        self.pending.push(Pending {
+            target: target.to_owned(),
+            delay,
+        });
+    }
+
+    /// The player pressed use, looking along `direction` from `eye`, at
+    /// the first solid entity within [`USE_REACH`]. A `Usable` entity
+    /// fires its target; a scripted one gets `on_use`. True if either.
     pub fn use_from(&mut self, eye: Vec3, direction: Vec3) -> bool {
         let end = eye + direction.normalize_or_zero() * USE_REACH;
         let trace = self.trace(eye, end, Vec3::ZERO);
-
-        let usable = trace
-            .entity
-            .and_then(|id| self.entity(id))
-            .and_then(|entity| entity.usable.as_ref());
-        let Some(usable) = usable else {
+        let Some(slot) = trace.entity.and_then(|id| self.entities.get(id.0)) else {
             return false;
         };
 
-        let target = usable.target.clone();
-        self.fire(&target);
-        true
+        let target = slot.entity.usable.as_ref().and_then(|u| u.target.clone());
+        let scripted = slot.instance.is_some();
+        if let Some(instance) = &slot.instance {
+            run_hook(&mut self.vm, instance, Hook::Use);
+        }
+        if let Some(target) = &target {
+            self.fire(target);
+        }
+        self.absorb_commands();
+
+        target.is_some() || scripted
     }
 
     /// One simulation step: movers slide, triggers check `player` (the
-    /// player's box; None to ignore the player, e.g. while flying).
+    /// player's box; None to ignore the player, e.g. while flying),
+    /// scripts tick, and due fires run.
     pub fn tick(&mut self, dt: f32, player: Option<Aabb>) {
         let player = player.map(Aabb::to_physics);
 
@@ -209,20 +246,19 @@ impl World {
             step_mover(slot, &mut self.physics, player, dt);
         }
 
-        let fired = self.entered_triggers(player);
-        for target in fired {
-            self.fire(&target);
-        }
+        self.enter_triggers(player);
+        self.tick_scripts(dt);
+        self.run_fires(dt);
     }
 
     /// Queues every entity's model, between the last two ticks.
-    pub fn draw(&self, frame: &mut Frame, alpha: f32) {
+    pub fn draw(&self, frame: &mut Frame) {
         for (_, slot) in self.entities.iter() {
             let Some(model) = slot.entity.model else {
                 continue;
             };
 
-            let position = slot.prev_position.lerp(slot.entity.position, alpha);
+            let position = slot.prev_position.lerp(slot.entity.position, frame.alpha);
             let transform = Mat4::from_rotation_translation(slot.entity.rotation, position);
             match model.texture {
                 Some(texture) => frame.draw_textured(model.mesh, texture, transform),
@@ -235,10 +271,33 @@ impl World {
         &self.physics
     }
 
-    /// Targets of triggers the player entered this tick.
-    fn entered_triggers(&mut self, player: Option<physics::Aabb>) -> Vec<String> {
-        let mut fired = Vec::new();
+    /// Runs Lua source, defining or redefining its classes. Live
+    /// instances keep their state and use the new methods. `chunk` names
+    /// it in errors, e.g. "scripts/sandbox.lua". The engine already loads
+    /// `assets/scripts/*.lua`; this is for scripts from elsewhere, and
+    /// tests.
+    pub fn load_script(&mut self, chunk: &str, source: &str) -> Result<(), EngineError> {
+        let loaded = self.vm.load(chunk, source);
+        self.absorb_commands();
 
+        loaded.map_err(|err: ScriptError| EngineError::Load {
+            path: chunk.to_owned(),
+            source: err.into(),
+        })
+    }
+
+    /// Script instance for a new entity; None (logged) if the class is
+    /// unknown.
+    fn instantiate(&mut self, class: &str, name: Option<&str>) -> Option<Instance> {
+        self.vm
+            .instance(class, name)
+            .inspect_err(|err| log::error!(target: SCRIPT_LOG, "{}", base::chain(err)))
+            .ok()
+    }
+
+    /// Triggers the player entered this tick: fire their targets and call
+    /// their scripts' `on_enter`.
+    fn enter_triggers(&mut self, player: Option<physics::Aabb>) {
         for (_, slot) in self.entities.iter_mut() {
             let Some(trigger) = &slot.entity.trigger else {
                 continue;
@@ -253,10 +312,93 @@ impl World {
                 continue;
             }
             slot.spent = trigger.repeat == Repeat::Once;
-            fired.push(trigger.target.clone());
+
+            if let Some(target) = &trigger.target {
+                self.pending.push(Pending {
+                    target: target.clone(),
+                    delay: 0.0,
+                });
+            }
+            if let Some(instance) = &slot.instance {
+                run_hook(&mut self.vm, instance, Hook::Enter);
+            }
         }
 
-        fired
+        self.absorb_commands();
+    }
+
+    /// `on_tick` for every scripted entity whose class has one.
+    fn tick_scripts(&mut self, dt: f32) {
+        let hook = Hook::Tick { dt };
+
+        for (_, slot) in self.entities.iter() {
+            let Some(instance) = &slot.instance else {
+                continue;
+            };
+            if self.vm.has_hook(instance, hook) {
+                run_hook(&mut self.vm, instance, hook);
+            }
+        }
+
+        self.absorb_commands();
+    }
+
+    /// Counts down delayed fires, then fires what is due, oldest first.
+    /// Scripts reacting to a fire may queue more; those run this tick
+    /// too, up to `MAX_FIRES_PER_TICK`.
+    fn run_fires(&mut self, dt: f32) {
+        for pending in &mut self.pending {
+            pending.delay -= dt;
+        }
+
+        for _ in 0..MAX_FIRES_PER_TICK {
+            let Some(due) = self.pending.iter().position(|p| p.delay <= 0.0) else {
+                return;
+            };
+            let pending = self.pending.remove(due);
+            self.fire_now(&pending.target);
+        }
+
+        if self.pending.iter().any(|p| p.delay <= 0.0) {
+            log::warn!(
+                "over {MAX_FIRES_PER_TICK} fires in one tick, the rest wait \
+                 (a script firing its own name?)"
+            );
+        }
+    }
+
+    /// Every entity named `target` reacts now.
+    fn fire_now(&mut self, target: &str) {
+        let mut matched = false;
+
+        for (_, slot) in self.entities.iter_mut() {
+            if slot.entity.name.as_deref() != Some(target) {
+                continue;
+            }
+            matched = true;
+
+            if let Some(mover) = &slot.entity.mover {
+                slot.mover.fire(mover.close);
+            }
+            if let Some(instance) = &slot.instance {
+                run_hook(&mut self.vm, instance, Hook::Fire);
+            }
+        }
+
+        if !matched {
+            log::warn!("fired {target:?}, but no entity has that name");
+        }
+        self.absorb_commands();
+    }
+
+    /// Applies what scripts asked for: fires join the queue, logs print.
+    fn absorb_commands(&mut self) {
+        for command in self.vm.drain() {
+            match command {
+                Command::Fire { target, delay } => self.pending.push(Pending { target, delay }),
+                Command::Log(text) => log::info!(target: SCRIPT_LOG, "{text}"),
+            }
+        }
     }
 
     /// The entity owning `body`. A linear scan: fine for a sandbox's
@@ -266,6 +408,13 @@ impl World {
             .iter()
             .find(|(_, slot)| slot.body == Some(body))
             .map(|(id, _)| EntityId(id))
+    }
+}
+
+/// Calls a script hook; a failing hook is logged, never fatal.
+fn run_hook(vm: &mut Vm, instance: &Instance, hook: Hook) {
+    if let Err(err) = vm.call(instance, hook) {
+        log::error!(target: SCRIPT_LOG, "{}", base::chain(&err));
     }
 }
 
@@ -476,7 +625,7 @@ mod tests {
             position: Vec3::Z * 3.0,
             trigger: Some(Trigger {
                 volume: Aabb::from_center(Vec3::ZERO, Vec3::ONE),
-                target: DOOR.into(),
+                target: Some(DOOR.into()),
                 repeat,
             }),
             ..Default::default()
@@ -509,7 +658,7 @@ mod tests {
             position: Vec3::new(3.0, 1.0, 0.0),
             collider: Some(Brush::cuboid(Vec3::splat(-0.1), Vec3::splat(0.1))),
             usable: Some(Usable {
-                target: DOOR.into(),
+                target: Some(DOOR.into()),
             }),
             ..Default::default()
         });
@@ -525,6 +674,129 @@ mod tests {
 
         // The door itself is solid but not usable.
         assert!(!world.use_from(Vec3::new(0.0, 3.0, 1.0), Vec3::NEG_Z));
+    }
+
+    /// World with the 2 m door plus `source` loaded as a script.
+    fn scripted(source: &str) -> (World, EntityId) {
+        let mut world = World::new();
+        world.load_script("scripts/test.lua", source).unwrap();
+        let door = world.spawn(door(Close::OnFire));
+        (world, door)
+    }
+
+    /// A small solid box at `position` running `class`.
+    fn scripted_box(class: &str, name: Option<&str>, position: Vec3) -> Entity {
+        Entity {
+            name: name.map(Into::into),
+            position,
+            collider: Some(Brush::cuboid(Vec3::splat(-0.1), Vec3::splat(0.1))),
+            script: Some(class.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn script_relays_a_fire_to_the_door() {
+        let (mut world, door) =
+            scripted("Relay = {} function Relay:on_fire() world.fire('door') end");
+        world.spawn(scripted_box("Relay", Some("relay"), Vec3::X * 5.0));
+
+        world.fire("relay");
+        run(&mut world, 1.0, None);
+        assert_eq!(door_y(&world, door), 2.0);
+    }
+
+    #[test]
+    fn spawn_hook_runs_and_unknown_classes_are_skipped() {
+        let (mut world, door) =
+            scripted("Opener = {} function Opener:on_spawn() world.fire('door') end");
+
+        let missing = world.spawn(scripted_box("Missing", None, Vec3::X * 5.0));
+        assert!(
+            world.entity(missing).is_some(),
+            "spawned without its script"
+        );
+
+        world.spawn(scripted_box("Opener", None, Vec3::X * 5.0));
+        run(&mut world, 1.0, None);
+        assert_eq!(door_y(&world, door), 2.0);
+    }
+
+    #[test]
+    fn use_reaches_a_script_without_usable() {
+        let (mut world, door) = scripted("Knob = {} function Knob:on_use() world.fire('door') end");
+        world.spawn(scripted_box("Knob", None, Vec3::new(3.0, 1.0, 0.0)));
+
+        assert!(world.use_from(Vec3::new(3.0, 1.0, 1.0), Vec3::NEG_Z));
+        run(&mut world, 1.0, None);
+        assert_eq!(door_y(&world, door), 2.0);
+    }
+
+    #[test]
+    fn trigger_without_target_still_calls_on_enter() {
+        let (mut world, door) =
+            scripted("Plate = {} function Plate:on_enter() world.fire('door') end");
+        world.spawn(Entity {
+            position: Vec3::Z * 3.0,
+            trigger: Some(Trigger {
+                volume: Aabb::from_center(Vec3::ZERO, Vec3::ONE),
+                target: None,
+                repeat: Repeat::Once,
+            }),
+            script: Some("Plate".into()),
+            ..Default::default()
+        });
+
+        run(
+            &mut world,
+            1.0,
+            Some(Aabb::from_center(Vec3::Z * 3.0, HALF)),
+        );
+        assert_eq!(door_y(&world, door), 2.0);
+    }
+
+    #[test]
+    fn delayed_fire_waits_its_turn() {
+        let (mut world, door) =
+            scripted("Timer = {} function Timer:on_spawn() world.fire_after(0.5, 'door') end");
+        world.spawn(scripted_box("Timer", None, Vec3::X * 5.0));
+
+        run(&mut world, 0.3, None);
+        assert_eq!(door_y(&world, door), 0.0);
+        run(&mut world, 1.0, None);
+        assert_eq!(door_y(&world, door), 2.0);
+    }
+
+    #[test]
+    fn tick_hook_runs_every_tick() {
+        let (mut world, door) = scripted(
+            "Count = {}
+             function Count:on_tick(dt)
+                 self.t = (self.t or 0) + dt
+                 if self.t >= 0.3 and not self.done then
+                     self.done = true
+                     world.fire('door')
+                 end
+             end",
+        );
+        world.spawn(scripted_box("Count", None, Vec3::X * 5.0));
+
+        run(&mut world, 0.2, None);
+        assert_eq!(door_y(&world, door), 0.0);
+        run(&mut world, 1.0, None);
+        assert_eq!(door_y(&world, door), 2.0);
+    }
+
+    #[test]
+    fn a_script_firing_itself_cannot_hang_a_tick() {
+        let (mut world, _) =
+            scripted("Echo = {} function Echo:on_fire() world.fire(self.name) end");
+        world.spawn(scripted_box("Echo", Some("echo"), Vec3::X * 5.0));
+
+        world.fire("echo");
+        run(&mut world, 0.3, None);
+        // Still echoing, a bounded number of times per tick.
+        assert!(world.pending.len() <= 1);
     }
 
     #[test]

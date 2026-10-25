@@ -4,11 +4,15 @@ use platform::Flow;
 
 use crate::Game;
 use crate::input::{CursorMode, Input};
+use crate::world::World;
 
 /// One simulation step, handed to `Game::tick`.
 pub struct Tick<'a> {
     /// Input as of this tick.
     pub input: &'a Input,
+    /// Entities and solid geometry. The game advances it with
+    /// `world.tick`, passing the player's box.
+    pub world: &'a mut World,
     /// Seconds per tick (fixed).
     pub dt: f32,
     quit: bool,
@@ -40,6 +44,7 @@ impl Tick<'_> {
 pub(crate) fn run_ticks(
     game: &mut impl Game,
     input: &mut Input,
+    world: &mut World,
     cursor: &mut CursorMode,
     ticks: u32,
     dt: f32,
@@ -47,6 +52,7 @@ pub(crate) fn run_ticks(
     for _ in 0..ticks {
         let mut tick = Tick {
             input,
+            world,
             dt,
             quit: false,
             cursor: *cursor,
@@ -84,7 +90,7 @@ mod tests {
     }
 
     impl Game for Recorder {
-        fn init(&mut self, _: &mut Gfx) -> Result<(), BoxError> {
+        fn init(&mut self, _: &mut Gfx, _: &mut World) -> Result<(), BoxError> {
             Ok(())
         }
 
@@ -107,7 +113,14 @@ mod tests {
 
     /// `run_ticks` with a free cursor.
     fn run(game: &mut Recorder, input: &mut Input, ticks: u32, dt: f32) -> Flow {
-        run_ticks(game, input, &mut CursorMode::Free, ticks, dt)
+        run_ticks(
+            game,
+            input,
+            &mut World::new(),
+            &mut CursorMode::Free,
+            ticks,
+            dt,
+        )
     }
 
     fn pressed_space() -> Input {
@@ -167,7 +180,15 @@ mod tests {
         };
         let mut cursor = CursorMode::Free;
 
-        run_ticks(&mut game, &mut Input::default(), &mut cursor, 2, 0.1);
+        let mut world = World::new();
+        run_ticks(
+            &mut game,
+            &mut Input::default(),
+            &mut world,
+            &mut cursor,
+            2,
+            0.1,
+        );
 
         assert_eq!(game.cursors, [CursorMode::Free, CursorMode::Captured]);
         assert_eq!(cursor, CursorMode::Captured);

@@ -1,5 +1,6 @@
 //! Asset registry: which asset path backs which engine resource. Hot
 //! reload looks changed paths up here instead of hard-coding them.
+//! Scripts are found by listing `scripts/*.lua` at startup.
 //!
 //!   watcher ─► "textures/crate.png" ─► Registry ─► Asset::Texture(id)
 //!                                                      └─► reload(): decode,
@@ -10,13 +11,20 @@ use std::collections::HashMap;
 use base::{BoxError, Image, Vfs};
 use render::{Renderer, Shader, TextureId};
 
-/// A reloadable engine resource. Scripts and maps join here later.
+use crate::world::World;
+
+const SCRIPT_DIR: &str = "scripts";
+const SCRIPT_EXTENSION: &str = "lua";
+
+/// A reloadable engine resource. Maps join here later.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Asset {
     Shader(Shader),
     Texture(TextureId),
     /// The renderer's one quantization palette.
     Palette,
+    /// A Lua script, run in the world's VM.
+    Script,
 }
 
 /// Reads and decodes an image asset. PNG only for now.
@@ -25,10 +33,37 @@ pub(crate) fn load_image(vfs: &Vfs, path: &str) -> Result<Image, BoxError> {
     Ok(base::image::read_png(&bytes)?)
 }
 
-/// Re-reads `path` and swaps it into the renderer. On error the old
-/// version stays active.
+/// Runs every `scripts/*.lua` in `world`, in name order, and watches
+/// them. A broken script is logged and skipped; fixing the file reloads
+/// it. Scripts added while running load on the next start.
+pub(crate) fn load_scripts(vfs: &Vfs, world: &mut World, registry: &mut Registry) {
+    let paths = match vfs.list(SCRIPT_DIR, SCRIPT_EXTENSION) {
+        Ok(paths) => paths,
+        Err(err) => {
+            log::error!("list scripts: {}", base::chain(&err));
+            return;
+        }
+    };
+
+    for path in paths {
+        registry.register(&path, Asset::Script);
+
+        let loaded = vfs
+            .read_text(&path)
+            .map_err(BoxError::from)
+            .and_then(|source| Ok(world.load_script(&path, &source)?));
+        match loaded {
+            Ok(()) => log::info!("loaded {path}"),
+            Err(err) => log::error!("script {path} failed: {}", base::chain(&*err)),
+        }
+    }
+}
+
+/// Re-reads `path` and swaps it into the renderer or world. On error the
+/// old version stays active.
 pub(crate) fn reload(
     renderer: &mut Renderer,
+    world: &mut World,
     vfs: &Vfs,
     path: &str,
     asset: Asset,
@@ -45,6 +80,10 @@ pub(crate) fn reload(
         Asset::Palette => {
             let image = load_image(vfs, path)?;
             renderer.set_palette(&image)?;
+        }
+        Asset::Script => {
+            let source = vfs.read_text(path)?;
+            world.load_script(path, &source)?;
         }
     }
 
@@ -156,8 +195,24 @@ mod tests {
         let id = renderer.create_texture(&Image::solid([0; 4])).unwrap();
         let asset = Asset::Texture(id);
 
-        reload(&mut renderer, &vfs, "textures/crate.png", asset).unwrap();
-        assert!(reload(&mut renderer, &vfs, "textures/nope.png", asset).is_err());
+        reload(
+            &mut renderer,
+            &mut World::new(),
+            &vfs,
+            "textures/crate.png",
+            asset,
+        )
+        .unwrap();
+        assert!(
+            reload(
+                &mut renderer,
+                &mut World::new(),
+                &vfs,
+                "textures/nope.png",
+                asset
+            )
+            .is_err()
+        );
         // Handle survives both: the failed reload left the texture in place.
         assert!(renderer.destroy_texture(id));
     }
@@ -171,9 +226,25 @@ mod tests {
             return;
         };
 
-        reload(&mut renderer, &vfs, "palettes/default.png", Asset::Palette).unwrap();
+        reload(
+            &mut renderer,
+            &mut World::new(),
+            &vfs,
+            "palettes/default.png",
+            Asset::Palette,
+        )
+        .unwrap();
         // 64×64 = 4096 colors, over the 256 limit.
-        assert!(reload(&mut renderer, &vfs, "textures/crate.png", Asset::Palette).is_err());
+        assert!(
+            reload(
+                &mut renderer,
+                &mut World::new(),
+                &vfs,
+                "textures/crate.png",
+                Asset::Palette
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -187,8 +258,63 @@ mod tests {
 
         // A PNG is not WGSL: read_text fails on invalid UTF-8.
         let asset = Asset::Shader(Shader::Mesh);
-        assert!(reload(&mut renderer, &vfs, "textures/crate.png", asset).is_err());
-        reload(&mut renderer, &vfs, shader_path(Shader::Mesh), asset).unwrap();
+        assert!(
+            reload(
+                &mut renderer,
+                &mut World::new(),
+                &vfs,
+                "textures/crate.png",
+                asset
+            )
+            .is_err()
+        );
+        reload(
+            &mut renderer,
+            &mut World::new(),
+            &vfs,
+            shader_path(Shader::Mesh),
+            asset,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn shipped_scripts_load_and_register() {
+        let vfs = repo_assets();
+        let mut world = World::new();
+        let mut registry = Registry::with_shaders();
+
+        let scripts = vfs.list(SCRIPT_DIR, SCRIPT_EXTENSION).unwrap();
+        assert!(!scripts.is_empty(), "no scripts under assets/{SCRIPT_DIR}");
+        for path in &scripts {
+            let source = vfs.read_text(path).unwrap();
+            world
+                .load_script(path, &source)
+                .unwrap_or_else(|err| panic!("{}", base::chain(&err)));
+        }
+
+        load_scripts(&vfs, &mut world, &mut registry);
+        assert_eq!(registry.lookup(&scripts[0]), Some(Asset::Script));
+    }
+
+    #[test]
+    fn script_reload_reports_lua_errors() {
+        let source = |shader| repo_assets().read_text(shader_path(shader));
+        let Some(mut renderer) = render::test_support::headless_or_skip(Default::default(), source)
+        else {
+            return;
+        };
+
+        // A shader is not Lua.
+        let mut world = World::new();
+        let broken = reload(
+            &mut renderer,
+            &mut world,
+            &repo_assets(),
+            shader_path(Shader::Mesh),
+            Asset::Script,
+        );
+        assert!(broken.is_err());
     }
 
     #[test]

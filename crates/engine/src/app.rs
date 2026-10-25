@@ -1,7 +1,10 @@
-//! Main loop. Per frame:
+//! Main loop. At start: load scripts into the world, then `game.init`.
+//! Per frame:
 //!
-//!   hot reload ─► N fixed ticks (game.tick) ─► game.draw(alpha) ─► render
-//!   ─► debug captures (F12, $ENGINE_CAPTURE_FRAME)
+//! ```text
+//!   hot reload ─► N fixed ticks (game.tick) ─► game.draw(alpha)
+//!   ─► world.draw ─► render ─► debug captures (F12, $ENGINE_CAPTURE_FRAME)
+//! ```
 
 use base::{Vfs, Watcher};
 use platform::{Event, FixedStep, Flow, Handler, RunError, Window, WindowConfig};
@@ -12,6 +15,7 @@ use crate::debug::{self, Latch, SCREENSHOT_KEY};
 use crate::error::EngineError;
 use crate::gfx::{Frame, Gfx};
 use crate::input::{CursorMode, Input};
+use crate::world::World;
 use crate::{Config, Game, sim};
 
 pub(crate) fn run(config: Config, game: impl Game) -> Result<(), EngineError> {
@@ -34,6 +38,7 @@ pub(crate) fn run(config: Config, game: impl Game) -> Result<(), EngineError> {
         vfs,
         watcher,
         registry: Registry::with_shaders(),
+        world: World::new(),
         input: Input::default(),
         cursor: CursorMode::Free,
         capture_frame: debug::capture_frame(),
@@ -54,6 +59,8 @@ struct App<G> {
     vfs: Vfs,
     watcher: Option<Watcher>,
     registry: Registry,
+    /// Owned here so script hot reload can reach it.
+    world: World,
     input: Input,
     /// What the game wants; `Running::applied_cursor` is what the window has.
     cursor: CursorMode,
@@ -103,7 +110,14 @@ impl<G: Game> App<G> {
                 continue;
             };
 
-            match assets::reload(&mut running.renderer, &self.vfs, &path, asset) {
+            let reloaded = assets::reload(
+                &mut running.renderer,
+                &mut self.world,
+                &self.vfs,
+                &path,
+                asset,
+            );
+            match reloaded {
                 Ok(()) => log::info!("reloaded {path}"),
                 Err(err) => log::error!(
                     "reload {path} failed, keeping old version: {}",
@@ -124,12 +138,16 @@ impl<G: Game> Handler for App<G> {
         let config = self.config.video.to_render();
         let mut renderer = Renderer::new(window.clone(), size, config, source)?;
 
+        // Classes must exist before the game spawns scripted entities.
+        assets::load_scripts(&self.vfs, &mut self.world, &mut self.registry);
+
+        let mut gfx = Gfx {
+            renderer: &mut renderer,
+            vfs: &self.vfs,
+            registry: &mut self.registry,
+        };
         self.game
-            .init(&mut Gfx {
-                renderer: &mut renderer,
-                vfs: &self.vfs,
-                registry: &mut self.registry,
-            })
+            .init(&mut gfx, &mut self.world)
             .map_err(EngineError::Game)?;
 
         // Clock starts after loading so load time is not simulated.
@@ -174,7 +192,14 @@ impl<G: Game> Handler for App<G> {
 
         let ticks = running.clock.advance();
         let dt = running.clock.dt();
-        let flow = sim::run_ticks(&mut self.game, &mut self.input, &mut self.cursor, ticks, dt);
+        let flow = sim::run_ticks(
+            &mut self.game,
+            &mut self.input,
+            &mut self.world,
+            &mut self.cursor,
+            ticks,
+            dt,
+        );
         if flow == Flow::Exit {
             return Flow::Exit;
         }
@@ -182,6 +207,7 @@ impl<G: Game> Handler for App<G> {
 
         running.frame.begin(running.clock.alpha());
         self.game.draw(&mut running.frame);
+        self.world.draw(&mut running.frame);
         running.frame.submit(&mut running.renderer);
         running.frame_index += 1;
 

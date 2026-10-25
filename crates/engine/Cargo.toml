@@ -12,6 +12,7 @@ log.workspace = true
 physics.workspace = true
 platform.workspace = true
 render.workspace = true
+script.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

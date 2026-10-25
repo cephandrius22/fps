@@ -2,9 +2,9 @@
 //! should handle, side by side. Seen from above (−Z up the page):
 //!
 //! ```text
-//!                 ┌──────────┐ z −16
-//!                 │   room   │
-//!                 │  ░░░░    │   ░ trigger: reopens the door from inside
+//!                 ┌────■─────┐ z −16   ■ inside: scripted button,
+//!       secret ═► ║   room   │            3 presses open the secret
+//!       panel     │  ░░░░    │   ░ trigger: reopens the door from inside
 //!                 └───╡══╞───┘ z −10
 //!                     door  ■ button (use: E)
 //!
@@ -14,19 +14,24 @@
 //!                          ● spawn (0, 8)          └──────┘
 //! ```
 //!
-//! Geometry lives in plain functions returning brushes, so tests can
-//! check it without a GPU; `build` adds meshes and textures.
+//! Geometry and entities live in plain functions without models, so
+//! tests can check them without a GPU; `build` adds meshes and
+//! textures. Scripted behavior is in `assets/scripts/sandbox.lua`.
 
 use engine::math::{Quat, Vec3};
 use engine::{
-    Aabb, Brush, Close, Entity, Gfx, MeshData, MeshHandle, Model, Mover, Plane, Repeat,
-    TextureHandle, Trigger, Usable, World,
+    Aabb, Brush, Close, Entity, Gfx, MeshData, Model, Mover, Plane, Repeat, TextureHandle, Trigger,
+    Usable, World,
 };
 
 use crate::shapes::{self, Tint};
 
 /// Name the door answers to; the button and trigger fire it.
 pub const DOOR: &str = "door";
+/// Name the secret panel answers to; the scripted button fires it.
+pub const SECRET: &str = "secret";
+/// Lua class (in assets/scripts/sandbox.lua) of the button inside.
+pub const SECRET_BUTTON_CLASS: &str = "SecretButton";
 /// Where the player starts: feet on the floor, facing the room (−Z).
 pub const SPAWN: Vec3 = Vec3::new(0.0, 0.0, 8.0);
 
@@ -62,6 +67,10 @@ const DOOR_HEIGHT: f32 = 2.2;
 const DOOR_TRAVEL: Vec3 = Vec3::new(-2.0, 0.0, 0.0);
 const DOOR_SPEED: f32 = 2.0;
 const DOOR_WAIT: f32 = 3.0;
+/// Opening in the west wall the secret panel fills, along Z.
+const SECRET_Z: (f32, f32) = (-14.0, -12.0);
+/// The panel sinks into the floor, slowly, and stays down.
+const SECRET_SPEED: f32 = 1.0;
 
 /// Crate positions (bottom-center) and yaw, radians.
 const CRATES: [(Vec3, f32); 5] = [
@@ -150,24 +159,36 @@ fn ramp(degrees: f32, z_min: f32, z_max: f32) -> Brush {
     .expect("ramp planes enclose a wedge")
 }
 
-/// Four walls, a roof, and a doorway in the front (+Z) wall.
+/// Four walls, a roof, a doorway in the front (+Z) wall, and an opening
+/// in the west (−X) wall for the secret panel.
 fn room_walls() -> Vec<Brush> {
     let (lo, hi) = (ROOM_MIN, ROOM_MAX);
     let front = hi.z;
+    let west = lo.x - WALL;
+    let (secret_back, secret_front) = SECRET_Z;
 
     vec![
-        // Back, left, right.
+        // Back and right.
         Brush::cuboid(
-            Vec3::new(lo.x - WALL, 0.0, lo.z - WALL),
+            Vec3::new(west, 0.0, lo.z - WALL),
             Vec3::new(hi.x + WALL, hi.y, lo.z),
-        ),
-        Brush::cuboid(
-            Vec3::new(lo.x - WALL, 0.0, lo.z),
-            Vec3::new(lo.x, hi.y, front + WALL),
         ),
         Brush::cuboid(
             Vec3::new(hi.x, 0.0, lo.z),
             Vec3::new(hi.x + WALL, hi.y, front + WALL),
+        ),
+        // West, either side of the secret opening, and above it.
+        Brush::cuboid(
+            Vec3::new(west, 0.0, lo.z),
+            Vec3::new(lo.x, hi.y, secret_back),
+        ),
+        Brush::cuboid(
+            Vec3::new(west, 0.0, secret_front),
+            Vec3::new(lo.x, hi.y, front + WALL),
+        ),
+        Brush::cuboid(
+            Vec3::new(west, DOOR_HEIGHT, secret_back),
+            Vec3::new(lo.x, hi.y, secret_front),
         ),
         // Front, either side of the doorway, and above it.
         Brush::cuboid(
@@ -184,108 +205,172 @@ fn room_walls() -> Vec<Brush> {
         ),
         // Roof.
         Brush::cuboid(
-            Vec3::new(lo.x - WALL, hi.y, lo.z - WALL),
+            Vec3::new(west, hi.y, lo.z - WALL),
             Vec3::new(hi.x + WALL, hi.y + WALL, front + WALL),
         ),
     ]
 }
 
 /// Sliding door filling the doorway, slimmer than the wall it hides in.
-fn door_brush() -> Brush {
+fn door() -> Entity {
     let z = ROOM_MAX.z + WALL / 2.0;
-    Brush::cuboid(
+    let brush = Brush::cuboid(
         Vec3::new(-DOOR_HALF_WIDTH, 0.0, z - 0.1),
         Vec3::new(DOOR_HALF_WIDTH, DOOR_HEIGHT, z + 0.1),
-    )
-}
+    );
 
-/// Small block on the front wall's outside, right of the door.
-fn button_brush() -> Brush {
-    let face = ROOM_MAX.z + WALL;
-    Brush::cuboid(
-        Vec3::new(DOOR_HALF_WIDTH + 0.5, 1.1, face),
-        Vec3::new(DOOR_HALF_WIDTH + 0.8, 1.4, face + 0.1),
-    )
-}
-
-/// Inside the room, just behind the door.
-fn trigger_volume() -> Aabb {
-    let front = ROOM_MAX.z;
-    Aabb {
-        min: Vec3::new(-DOOR_HALF_WIDTH, 0.0, front - 1.5),
-        max: Vec3::new(DOOR_HALF_WIDTH, DOOR_HEIGHT, front),
-    }
-}
-
-/// Every level entity, ready to draw and collide.
-pub fn build(gfx: &mut Gfx, textures: &Textures) -> World {
-    let mut world = World::new();
-    let crate_mesh = gfx.create_mesh(&shapes::cube(Tint::White));
-
-    for brush in stone() {
-        let mesh = gfx.create_mesh(&brush.mesh(STONE_METERS));
-        world.spawn(solid(brush, mesh, Some(textures.stone)));
-    }
-
-    for (base, yaw) in CRATES {
-        let rotation = Quat::from_rotation_y(yaw);
-        let collider = Brush::oriented_box(Vec3::ZERO, CRATE_HALF, rotation);
-        world.spawn(Entity {
-            position: base + Vec3::Y * CRATE_HALF.y,
-            rotation,
-            collider,
-            ..solid_model(crate_mesh, Some(textures.wood))
-        });
-    }
-
-    let door = door_brush();
-    world.spawn(Entity {
+    Entity {
         name: Some(DOOR.into()),
+        collider: Some(brush),
         mover: Some(Mover {
             travel: DOOR_TRAVEL,
             speed: DOOR_SPEED,
             close: Close::After(DOOR_WAIT),
         }),
-        ..solid(
-            door.clone(),
-            gfx.create_mesh(&door.mesh(WOOD_METERS)),
-            Some(textures.wood),
-        )
-    });
-
-    let button = button_brush();
-    let red = tinted(button.mesh(WOOD_METERS), BUTTON_RED);
-    world.spawn(Entity {
-        usable: Some(Usable {
-            target: DOOR.into(),
-        }),
-        ..solid(button, gfx.create_mesh(&red), None)
-    });
-
-    world.spawn(Entity {
-        trigger: Some(Trigger {
-            volume: trigger_volume(),
-            target: DOOR.into(),
-            repeat: Repeat::EveryEntry,
-        }),
         ..Default::default()
-    });
-
-    world
-}
-
-/// Entity drawn with `mesh` and solid as `brush`, both in world space.
-fn solid(brush: Brush, mesh: MeshHandle, texture: Option<TextureHandle>) -> Entity {
-    Entity {
-        collider: Some(brush),
-        ..solid_model(mesh, texture)
     }
 }
 
-fn solid_model(mesh: MeshHandle, texture: Option<TextureHandle>) -> Entity {
+/// Button on the front wall's outside, right of the door: opens it.
+fn door_button() -> Entity {
+    let face = ROOM_MAX.z + WALL;
+    let brush = Brush::cuboid(
+        Vec3::new(DOOR_HALF_WIDTH + 0.5, 1.1, face),
+        Vec3::new(DOOR_HALF_WIDTH + 0.8, 1.4, face + 0.1),
+    );
+
+    Entity {
+        collider: Some(brush),
+        usable: Some(Usable {
+            target: Some(DOOR.into()),
+        }),
+        ..Default::default()
+    }
+}
+
+/// Inside the room, just behind the door: reopens it on the way out.
+fn door_trigger() -> Entity {
+    let front = ROOM_MAX.z;
+    let volume = Aabb {
+        min: Vec3::new(-DOOR_HALF_WIDTH, 0.0, front - 1.5),
+        max: Vec3::new(DOOR_HALF_WIDTH, DOOR_HEIGHT, front),
+    };
+
+    Entity {
+        trigger: Some(Trigger {
+            volume,
+            target: Some(DOOR.into()),
+            repeat: Repeat::EveryEntry,
+        }),
+        ..Default::default()
+    }
+}
+
+/// Fills the west-wall opening; sinks into the floor when fired.
+fn secret_panel() -> Entity {
+    let (back, front) = SECRET_Z;
+    let brush = Brush::cuboid(
+        Vec3::new(ROOM_MIN.x - WALL + 0.05, 0.0, back),
+        Vec3::new(ROOM_MIN.x - 0.05, DOOR_HEIGHT, front),
+    );
+
+    Entity {
+        name: Some(SECRET.into()),
+        collider: Some(brush),
+        mover: Some(Mover {
+            travel: Vec3::NEG_Y * DOOR_HEIGHT,
+            speed: SECRET_SPEED,
+            close: Close::OnFire,
+        }),
+        ..Default::default()
+    }
+}
+
+/// Button on the back wall's inside, run by Lua: counts presses and
+/// fires the secret panel (see assets/scripts/sandbox.lua).
+fn secret_button() -> Entity {
+    let back = ROOM_MIN.z;
+    let brush = Brush::cuboid(
+        Vec3::new(-0.15, 1.1, back),
+        Vec3::new(0.15, 1.4, back + 0.1),
+    );
+
+    Entity {
+        collider: Some(brush),
+        script: Some(SECRET_BUTTON_CLASS.into()),
+        ..Default::default()
+    }
+}
+
+/// Every level entity, ready to draw and collide, spawned into `world`.
+pub fn build(gfx: &mut Gfx, world: &mut World, textures: &Textures) {
+    let stone_texture = Some(textures.stone);
+    let wood_texture = Some(textures.wood);
+
+    for brush in stone() {
+        world.spawn(with_mesh(gfx, solid(brush), STONE_METERS, stone_texture));
+    }
+
+    let crate_mesh = gfx.create_mesh(&shapes::cube(Tint::White));
+    for (base, yaw) in CRATES {
+        let rotation = Quat::from_rotation_y(yaw);
+        world.spawn(Entity {
+            position: base + Vec3::Y * CRATE_HALF.y,
+            rotation,
+            collider: Brush::oriented_box(Vec3::ZERO, CRATE_HALF, rotation),
+            model: Some(Model {
+                mesh: crate_mesh,
+                texture: wood_texture,
+            }),
+            ..Default::default()
+        });
+    }
+
+    world.spawn(with_mesh(gfx, door(), WOOD_METERS, wood_texture));
+    world.spawn(with_mesh(gfx, secret_panel(), STONE_METERS, stone_texture));
+    world.spawn(red_button(gfx, door_button()));
+    world.spawn(red_button(gfx, secret_button()));
+    world.spawn(door_trigger());
+}
+
+/// Entity solid as `brush`, in world space.
+fn solid(brush: Brush) -> Entity {
+    Entity {
+        collider: Some(brush),
+        ..Default::default()
+    }
+}
+
+/// Adds a model drawn from the entity's own collider.
+fn with_mesh(
+    gfx: &mut Gfx,
+    entity: Entity,
+    meters_per_texture: f32,
+    texture: Option<TextureHandle>,
+) -> Entity {
+    let collider = entity
+        .collider
+        .as_ref()
+        .expect("meshed entities have a collider");
+    let mesh = gfx.create_mesh(&collider.mesh(meters_per_texture));
+
     Entity {
         model: Some(Model { mesh, texture }),
-        ..Default::default()
+        ..entity
+    }
+}
+
+/// Adds a plain red model drawn from the entity's collider.
+fn red_button(gfx: &mut Gfx, entity: Entity) -> Entity {
+    let collider = entity.collider.as_ref().expect("buttons have a collider");
+    let mesh = gfx.create_mesh(&tinted(collider.mesh(WOOD_METERS), BUTTON_RED));
+
+    Entity {
+        model: Some(Model {
+            mesh,
+            texture: None,
+        }),
+        ..entity
     }
 }
 
@@ -303,13 +388,34 @@ mod tests {
     /// A person-sized box, as the walker uses.
     const HALF: Vec3 = Vec3::new(0.3, 0.9, 0.3);
 
+    /// Level without models: geometry, door, buttons, panel, scripts.
     fn collision_only() -> World {
         let mut world = World::new();
+        let script = std::fs::read_to_string(SCRIPT_FILE).unwrap();
+        world.load_script(SCRIPT_FILE, &script).unwrap();
+
         for brush in stone() {
             world.add_brush(brush);
         }
-        world.add_brush(door_brush());
+        for entity in [
+            door(),
+            door_button(),
+            door_trigger(),
+            secret_panel(),
+            secret_button(),
+        ] {
+            world.spawn(entity);
+        }
         world
+    }
+
+    const SCRIPT_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../assets/scripts/sandbox.lua");
+    const DT: f32 = 1.0 / 60.0;
+
+    fn run(world: &mut World, seconds: f32) {
+        for _ in 0..(seconds / DT).round() as u32 {
+            world.tick(DT, None);
+        }
     }
 
     /// Normal of whatever is straight below `(x, z)`.
@@ -362,12 +468,36 @@ mod tests {
 
         assert!(world.trace(outside, inside, HALF * 0.5).hit());
         // The trigger sits inside the room, behind the door.
-        assert!(trigger_volume().max.z <= ROOM_MAX.z);
+        let trigger = door_trigger().trigger.unwrap();
+        assert!(trigger.volume.max.z <= ROOM_MAX.z);
+    }
+
+    #[test]
+    fn secret_button_opens_the_panel_on_the_third_press() {
+        let mut world = collision_only();
+        let eye = Vec3::new(0.0, 1.25, ROOM_MIN.z + 1.0);
+        let through_opening = |world: &World| {
+            let z = (SECRET_Z.0 + SECRET_Z.1) / 2.0;
+            let inside = Vec3::new(ROOM_MIN.x + 1.0, 1.0, z);
+            let outside = Vec3::new(ROOM_MIN.x - 2.0, 1.0, z);
+            !world.trace(inside, outside, HALF * 0.5).hit()
+        };
+
+        for _ in 0..2 {
+            assert!(world.use_from(eye, Vec3::NEG_Z));
+            run(&mut world, 3.0);
+        }
+        assert!(!through_opening(&world), "opened early");
+
+        assert!(world.use_from(eye, Vec3::NEG_Z));
+        run(&mut world, 3.0);
+        assert!(through_opening(&world));
     }
 
     #[test]
     fn open_door_hides_inside_the_wall() {
-        let open = door_brush().bounds().min + DOOR_TRAVEL;
+        let mover = door().mover.unwrap();
+        let open = door().collider.unwrap().bounds().min + mover.travel;
         // Fully open, the door's near edge clears the doorway.
         assert!(open.x + 2.0 * DOOR_HALF_WIDTH <= -DOOR_HALF_WIDTH + 1e-4);
         assert!(open.x >= ROOM_MIN.x);

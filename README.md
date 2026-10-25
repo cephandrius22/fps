@@ -9,7 +9,7 @@ renderer. The look is a setting, not a limit, so the engine can grow past it.
 brush collision, a character controller and entities. The sandbox is a
 small brush-built level you walk through: stairs, a walkable and a
 too-steep ramp, crates, and a room behind a sliding door opened by a
-button. It runs in distance fog at 640×360, quantized to a 256-color
+button. Inside, a Lua-scripted button opens a secret panel. It runs in distance fog at 640×360, quantized to a 256-color
 palette with ordered dithering, and upscaled to the window.
 
 ## Quick start
@@ -43,7 +43,7 @@ straight moves.
 | A / D | Flying | Strafe left / right, level with the ground. 5 m/s. |
 | Space / Left Ctrl | Flying | Fly straight up / down, whatever the view direction. 5 m/s. |
 | Left Shift | Flying | All flying 4× faster (20 m/s) |
-| E | Always | Use: fires whatever usable thing is under the screen center within 2 m. Here that is the red button beside the door, which opens it. Works while flying too. |
+| E | Always | Use: presses whatever usable thing is under the screen center within 2 m. Works while flying too. In the level: the red button beside the door opens it; the red button on the room's back wall is scripted (see below). |
 | Esc | Mouse captured | Frees the mouse |
 | Esc | Mouse free | Quits |
 | F1 | Always | Toggles fog. Starts on: gray-blue mist (exp², density 0.08). |
@@ -57,16 +57,20 @@ Switching away from the window frees the mouse; click to capture it again.
 In the level: the door slides open into the wall when you press the
 button, and closes 3 s after opening fully. It never closes on you; it
 backs off. Walking into the room's front strip (just inside the door)
-opens it again from inside. Steps up to 45 cm climb on their own;
-slopes steeper than about 45° are walls.
+opens it again from inside. The button on the room's back wall runs
+`SecretButton` in `assets/scripts/sandbox.lua`: the first two presses
+log "Click. N more.", the third logs a grinding sound and the panel in
+the room's west wall sinks into the floor for good. Script messages go
+to the terminal log. Steps up to 45 cm climb on their own; slopes
+steeper than about 45° are walls.
 
-While it runs, edit `assets/shaders/*.wgsl`, `assets/textures/*.png` or
-`assets/palettes/*.png` and save. The file reloads live. A broken file logs its error and the last good
+While it runs, edit `assets/shaders/*.wgsl`, `assets/textures/*.png`,
+`assets/palettes/*.png` or `assets/scripts/*.lua` and save. The file reloads live. A broken file logs its error and the last good
 version stays active.
 
 | Environment variable | Effect |
 |---|---|
-| `RUST_LOG=debug` | More logging (default: `info`, GPU internals at `warn`). `RUST_LOG=engine::app=trace` logs every OS event. |
+| `RUST_LOG=debug` | More logging (default: `info`, GPU internals at `warn`). `RUST_LOG=engine::app=trace` logs every OS event; script messages log under the `script` target. |
 | `ENGINE_ASSETS=<dir>` | Use this asset directory instead of searching upward for `assets/` |
 | `ENGINE_CAPTURE_FRAME=<n>` | Save frame *n* to `screenshots/frame-<n>.png`, then exit |
 | `REQUIRE_GPU=1` | Make GPU tests fail, instead of skip, when no GPU is found |
@@ -77,11 +81,13 @@ version stays active.
 assets/shaders/    WGSL shaders (hot-reloadable)
 assets/textures/   PNG textures (hot-reloadable)
 assets/palettes/   16×16 PNG palettes: 16 ramps of 16 shades (hot-reloadable)
+assets/scripts/    Lua entity classes, all loaded at startup (hot-reloadable)
 crates/
   base/            foundation: logging, verify!, Key/Button, Slots, Vfs, Watcher, Image/PNG
   platform/        OS layer: window, cursor capture, OS events, fixed-timestep clock (wraps winit)
   render/          renderer: low-res targets, meshes, textures, fog, palette pass, readback (wraps wgpu)
   physics/         collision: convex brushes, box traces, slide / step / ground moves (glam only)
+  script/          Lua host: sandboxed VM, entity classes, hooks, commands (wraps mlua)
   engine/          main loop, world + entities, walker and fly camera, asset loading:
                    the API games are written against
 game/              the game layer; today a walk-through sandbox level (game/src/level.rs)
@@ -94,33 +100,33 @@ game/              the game layer; today a walk-through sandbox level (game/src/
             │ game        your code: impl Game   │
             └─────────────────┬──────────────────┘
                               ▼
-            ┌────────────────────────────────────────────┐
-            │ engine      loop, input, world, entities,  │
-            │             walker, assets, public types   │
-            └──────┬───────────────┬──────────────┬──────┘
-                   ▼               ▼              ▼
-            ┌─────────────┐ ┌─────────────┐ ┌──────────────┐
-            │render (wgpu)│ │physics      │ │platform      │
-            │             │ │(brushes)    │ │(winit)       │
-            └─────────────┘ └─────────────┘ └──────────────┘
+            ┌───────────────────────────────────────────────────┐
+            │ engine      loop, input, world, entities,         │
+            │             walker, assets, public types          │
+            └─────┬────────────┬─────────────┬────────────┬─────┘
+                  ▼            ▼             ▼            ▼
+            ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌──────────┐
+            │render    │ │physics   │ │script     │ │platform  │
+            │(wgpu)    │ │(brushes) │ │(mlua)     │ │(winit)   │
+            └──────────┘ └──────────┘ └───────────┘ └──────────┘
    base ── foundation utilities, usable by every layer
 ```
 
 Dependency rules:
 
 - A layer talks only to the layer directly below it. `game` sees only
-  `engine`. `render`, `physics` and `platform` are siblings and never
-  depend on each other: the renderer takes any raw window handle, not a
+  `engine`. `render`, `physics`, `script` and `platform` are siblings and
+  never depend on each other: the renderer takes any raw window handle, not a
   `platform::Window`.
-- Library types stop at their wrapper. winit never leaves `platform` and
-  wgpu never leaves `render`.
+- Library types stop at their wrapper. winit never leaves `platform`,
+  wgpu never leaves `render`, and mlua never leaves `script`.
 - Lower-layer types stop at `engine`. Games use `engine::Camera`,
   `engine::MeshData`, `engine::MeshHandle`, `engine::TextureHandle`,
   `engine::Fog`, `engine::Quantize`, `engine::Brush`, `engine::Trace`
   and `engine::CursorMode`. `engine/src/gfx.rs` is the only place they are
-  converted to `render` types, and `engine/src/collision.rs` the only
-  place for `physics` types, so lower-layer internals can change without
-  breaking games.
+  converted to `render` types, `engine/src/collision.rs` the only place
+  for `physics` types, and `engine/src/world.rs` the only user of
+  `script`, so lower-layer internals can change without breaking games.
 - `base` has no knowledge of windows, GPUs or game rules. Shared vocabulary
   (`Key`, `Button`) lives there because two layers need it.
 - `render` does no file I/O. The engine hands it shader source.
@@ -131,15 +137,18 @@ Dependency rules:
 platform event loop
   │  OS events ──► engine: Input::apply / Renderer::resize
   ▼  redraw
+engine App::init: load assets/scripts/*.lua into the World, then Game::init(gfx, world)
 engine App::frame
   1. hot reload   Watcher ─► Vfs path ─► Registry ─► assets::reload
-                  (shader: recompile; texture, palette: decode, replace in place)
-  2. simulate     FixedStep::advance → N ticks → Game::tick(Tick { input, dt })
+                  (shader: recompile; texture, palette: decode, replace in place;
+                   script: re-run in the world's Lua state)
+  2. simulate     FixedStep::advance → N ticks → Game::tick(Tick { input, world, dt })
                   (input edges cleared after each tick; cursor requests applied after)
                   sandbox tick: walker.update(&world) → world.tick(dt, player box)
+                                (movers, triggers, on_tick, due fires)
                                 → E: world.use_from(eye, forward)
-  3. describe     Game::draw(Frame { camera, alpha, fog, quantize }) → world.draw(frame)
-                  (every entity model, interpolated) + draw_mesh / draw_textured
+  3. describe     Game::draw(Frame { camera, alpha, fog, quantize }) → extra draws,
+                  then the engine's world.draw(frame) (every entity model, interpolated)
   4. render       MeshPass (lit, fogged) → 640×360 scene
                   → PostPass (palette, dither) → 640×360 output
                   → BlitPass (nearest, letterbox) → window
@@ -204,9 +213,22 @@ engine App::frame
   components: `model`, `collider`, `mover` (doors), `trigger` (fires
   on entry), `usable` (fires on E). They live in a `World` the game owns
   and talk by name, as in Quake's target/targetname: a button with
-  `Usable { target: "door" }` opens every entity named "door". Firing a
-  name nobody has logs a warning. Behavior is in Rust for now; Lua comes
-  later and will drive the same names.
+  `Usable { target: Some("door".into()) }` opens every entity named
+  "door". Firing is queued and runs in `world.tick` (at most 64 fires
+  per tick, so a script firing its own name cannot hang the game).
+  Firing a name nobody has logs a warning. The engine owns the `World`
+  (it loads scripts into it and draws it); the game gets it in `init`
+  and as `tick.world`.
+- **Scripts.** An entity's `script: Some("SecretButton".into())` names
+  a Lua class: a global table in `assets/scripts/*.lua`. Each entity
+  gets its own instance (`self`), and its hooks run on events:
+  `on_spawn`, `on_fire`, `on_use`, `on_enter`, `on_tick(dt)`. Scripts
+  act through `world.fire(name)`, `world.fire_after(seconds, name)` and
+  `world.log(text)` (or `print`). They cannot read files or the OS, and a
+  hook running past a million Lua instructions is stopped with an error.
+  A failing script is logged, never fatal. Saving a script reloads it:
+  classes update and every entity keeps its state. Scripts cannot read
+  world state yet (positions, the player); that is the next step.
 - **Cameras.** `engine::FlyCamera` is a ready-made free-flying camera
   (no collision). Update it in `tick`, read it in `draw` with
   `camera(frame.alpha)` so motion is smooth at any frame rate. Mouse look
@@ -232,7 +254,8 @@ engine App::frame
 | Add a texture | Put a PNG in `assets/textures/`, load it in `init` with `gfx.load_texture("textures/x.png")?`, draw with `frame.draw_textured(mesh, texture, model)` |
 | Use a camera | `Walker` to walk with collision, `FlyCamera` for exploring; or write your own by setting `frame.camera` in `draw` |
 | Add level geometry | In `game/src/level.rs`: return another `Brush` from `stone()`, or spawn an `Entity` with a `model` and a `collider` |
-| Add a door, button or trigger | Spawn an `Entity` with `name` + `mover`, `usable`, or `trigger` that targets the name; see `level::build` |
+| Add a door, button or trigger | Spawn an `Entity` with `name` + `mover`, `usable`, or `trigger` that targets the name; see `game/src/level.rs` |
+| Script an entity | Add a class (global table with `on_*` methods) to a file in `assets/scripts/`, and set the entity's `script` to its name. New script files load on the next start; edits reload live. |
 | Tune movement | Change `walker.settings` fields, or start from `WalkSettings::arena()` / `survival()` |
 | Change resolution, scaling or mipmaps | `Config { video: Video { .. } }` in `game/src/main.rs` |
 | Add a key | `base/src/keys.rs` (variant, update `COUNT`) and `platform/src/event.rs` (`map_key`) |
@@ -251,12 +274,13 @@ cargo test
 |---|---|
 | `base` | unit tests: slots, Vfs, watcher, image validation, PNG decode (all color types) and round-trip, mip downsampling (linear-light average, odd sizes), error chains |
 | `platform` | unit tests: clock math (injected time), key/button mapping, cursor grab fallback order |
+| `script` | unit tests: hooks with per-instance state and names, missing hooks skipped, unknown classes rejected, every `world.*` command and `print`, reload keeping state, error messages naming the file or hook, runaway loops stopped, no io/os/file access |
 | `physics` | unit tests: brush construction (planes, bevels, faces, winding), box and ray traces (fractions, normals, start-solid), slide along walls and into corners, step up and down, ground detection, snap down |
 | `render` | unit tests: camera, letterbox, vertex and uniform layouts, fog encoding, mip chain sizes, palette loading, readback padding, GPU-test skip policy |
 | `render` GPU | `tests/headless.rs`: renders offscreen and checks pixels (culling, depth, shader reload, texture mapping, nearest filtering, texture replace/destroy/size limit, mipmaps, fog curves and background, palette quantization, dither pattern) |
 | shaders | `tests/shaders.rs`: naga validates every shipped `.wgsl` (no GPU needed) |
-| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach), brush meshes, asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload |
-| `game` | cube geometry; level layout (spawn is clear, ramp slopes, stair rises, door seals and hides); landing from flight needs room; profile and palette cycling |
+| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach; scripts relaying fires, spawn/use/enter/tick hooks, delayed fires, the per-tick fire cap), shipped scripts load, brush meshes, asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload |
+| `game` | cube geometry; level layout (spawn is clear, ramp slopes, stair rises, door seals and hides); the scripted secret button with the real `sandbox.lua` (opens on the third press only); landing from flight needs room; profile and palette cycling |
 
 GPU tests in any crate use `render::test_support` (a dev-only feature), so
 they share one policy: they skip only when no GPU adapter exists; any other renderer
@@ -291,5 +315,6 @@ To move to a newer Rust: change `channel` in `rust-toolchain.toml`, run
 See [retro-fps-engine-plan.md](retro-fps-engine-plan.md). It starts with a
 status section: what is implemented and where each phase stands. Phase 1
 lacks only what needs a map (BSP loader, lightmaps, reference-image
-test; they need ericw-tools). Phase 2 has collision, the walker and
-entities with doors, buttons and triggers; Lua scripting is next.
+test; they need ericw-tools). Phase 2 has collision, the walker,
+entities with doors, buttons and triggers, and the start of Lua
+scripting; spawning from map entities waits for a map loader.

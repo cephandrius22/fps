@@ -5,6 +5,7 @@
 //! ```text
 //!   game ──► engine ──┬──► render ───► wgpu
 //!                     ├──► physics ──► (glam only)
+//!                     ├──► script ───► mlua (Lua 5.4)
 //!                     └──► platform ─► winit
 //!   (base: foundation utilities, usable by all)
 //! ```
@@ -67,13 +68,21 @@ impl Default for Config {
 
 /// The game layer. `tick` advances simulation by a fixed `dt`; `draw`
 /// describes the scene, interpolating with `frame.alpha`.
+///
+/// The engine owns the [`World`]: it loads `assets/scripts/*.lua` into it
+/// before `init`, hot-reloads them, and draws every entity model after
+/// `draw`. The game spawns entities in `init` and advances the world in
+/// `tick` (it knows where the player is).
 pub trait Game {
-    /// Called once, after the window and GPU are up. Load resources here.
-    /// Any error type converts into `BoxError` with `?` or `.into()`.
-    fn init(&mut self, gfx: &mut Gfx) -> Result<(), BoxError>;
-    /// One fixed simulation step. Read input, update state.
+    /// Called once, after the window and GPU are up. Load resources and
+    /// spawn entities here. Any error type converts into `BoxError` with
+    /// `?` or `.into()`.
+    fn init(&mut self, gfx: &mut Gfx, world: &mut World) -> Result<(), BoxError>;
+    /// One fixed simulation step. Read input, update state, and call
+    /// `tick.world.tick`.
     fn tick(&mut self, tick: &mut Tick);
-    /// Describe the frame: set the camera, queue draws. No simulation.
+    /// Describe the frame: set the camera, queue extra draws. No
+    /// simulation. World entities are drawn by the engine.
     fn draw(&mut self, frame: &mut Frame);
 }
 
