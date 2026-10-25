@@ -6,7 +6,7 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 
 ## Status (2026-10-24)
 
-**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phases 0 and 0.5 are done** and CI is green on all three OSes. **Phase 1 is in progress**: the fly camera and textured meshes are done. See [README.md](README.md) for how the code is organized and how to build it.
+**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phases 0 and 0.5 are done** and CI is green on all three OSes. **Phase 1 is in progress**: the fly camera, textured meshes, mipmaps, distance fog and the palette/dither pass are done. The rest needs a map, which needs ericw-tools. See [README.md](README.md) for how the code is organized and how to build it.
 
 ### Roadmap
 
@@ -14,7 +14,7 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 |---|---|---|
 | 0 — Foundations | Window, loop, GPU, low-res cube | ✅ Done |
 | 0.5 — Follow-ups | Code-health items found in review | ✅ Done (optional renames skipped) |
-| 1 — First world | Fly through a lit, fogged BSP level | 🟡 In progress: 2 of 7 items done |
+| 1 — First world | Fly through a lit, fogged BSP level | 🟡 In progress: 5 of 8 items done |
 | 2 — Walking around | Collision, character controller, entities, Lua | Not started |
 | 3 — Own toolchain | `mapc`, lightmap baker, glTF props | Not started |
 | 4 — Dynamic lighting and atmosphere | Dynamic lights, flashlight shadows, fog volumes, 3D audio | Not started |
@@ -29,19 +29,21 @@ Section 11 has the detail for each phase.
 |---|---|---|
 | Build | Cargo workspace, one crate per layer, dependency versions set once in the root manifest | `Cargo.toml`, `crates/` |
 | Platform | winit window, cursor capture (locked, falling back to confined), OS events translated to engine `Key`/`Button`, fixed-timestep clock (60 Hz, stall cap) | `crates/platform` |
-| Renderer | wgpu device and swapchain, 640×360 low-res target with depth, nearest-neighbor letterboxed upscale (fit or integer), mesh pass with back-face culling, textures (sRGB, nearest, repeat, no mipmaps, white fallback, in-place replace), frame readback | `crates/render` |
+| Renderer | wgpu device and swapchain, 640×360 low-res targets with depth, nearest-neighbor letterboxed upscale (fit or integer), mesh pass with back-face culling, textures (sRGB, nearest, repeat, mipmaps off / nearest / linear, white fallback, in-place replace), frame readback | `crates/render` |
 | Lighting | L0: texture × vertex color × a fixed sun term. The vertex format already has a lightmap UV slot. | `assets/shaders/mesh.wgsl` |
+| Fog | F0: distance fog per frame (linear, exp, exp²), radial distance, background drawn in the fog color | `assets/shaders/mesh.wgsl`, `engine::Fog` |
+| Retro post-pass | Low-res pass after lighting: nearest-color palette quantization (up to 256 colors from a PNG, hot-reloadable) with optional 4×4 Bayer dither; byte-exact palette output | `assets/shaders/post.wgsl`, `crates/render/src/passes/post.rs`, `assets/palettes/` |
 | Engine core | Main loop, per-tick input state, cursor mode requests, `Game` trait (`init` / `tick` / `draw` with interpolation), engine-owned public types | `crates/engine` |
 | Camera | `FlyCamera`: WASD + Space/Ctrl, Shift for speed, mouse or arrow-key look, pitch clamp, per-frame interpolation | `crates/engine/src/fly.rs` |
 | Resources | Asset filesystem (`assets/` discovery), PNG decoding (all color types) to `base::Image`, meshes and textures addressed by generational handles | `crates/base`, `crates/render`, `crates/engine/src/gfx.rs` |
 | Hot reload | File watcher plus an asset registry. Shaders and textures reload; a bad file is rejected and the old version stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
 | Debugging | Logging (`RUST_LOG`), `verify!` asserts, F12 screenshot, `ENGINE_CAPTURE_FRAME=N` capture-and-exit | `crates/base`, `crates/engine/src/debug.rs` |
 | Errors | Typed `thiserror` errors per area; `EngineError` categories for games; `base::chain` for logs | `crates/*/src/error.rs` and per module |
-| Tests | 116 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
+| Tests | 144 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
 | CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows with the pinned toolchain. GPU tests run on all three (Linux via Mesa lavapipe); a skip would show as a run warning. | `.github/workflows/ci.yml` |
 | Build config | Toolchain pinned to 1.99.1, lints in `[workspace.lints]`, `publish = false`, dependency debug info reduced to line tables | `rust-toolchain.toml`, `Cargo.toml` |
 
-Not implemented yet, though the plan's sections describe them: maps, lightmaps, fog, the palette post-pass, mipmaps, collision, entities, scripting, audio.
+Not implemented yet, though the plan's sections describe them: maps, lightmaps, height and volumetric fog, collision, entities, scripting, audio.
 
 ---
 
@@ -71,8 +73,8 @@ A software rasterizer would be the most authentic route, but it fights every exp
 
 How the retro look is produced:
 - Render at a low internal resolution (e.g. 640×360), then upscale with nearest-neighbor.
-- Nearest-neighbor texture sampling, optionally with no mipmaps.
-- Optional palette-quantization post-pass (256-color LUT) with ordered dithering.
+- Nearest-neighbor texture sampling, optionally with no mipmaps. ✅
+- Optional palette-quantization post-pass (256 colors) with ordered dithering. ✅ Brute-force nearest-color search; a 3D LUT is the optimization if the internal resolution grows.
 - Optional vertex snapping and lighting banding.
 - Each item is a config toggle, so the look becomes a dial rather than a fixed constraint.
 
@@ -192,7 +194,7 @@ Lighting is built in tiers. Each tier is additive, and nothing is thrown away.
 
 | Tier | Feature | Notes |
 |---|---|---|
-| F0 | **Distance fog** (linear / exponential / exp²) | In every lit shader from the start. Per-level color, density, and range. |
+| F0 | **Distance fog** (linear / exponential / exp²) | In every lit shader from the start. Per-level color, density, and range. ✅ Done (set per frame). |
 | F1 | **Height fog** | Exponential falloff with altitude. Good for low-lying mist. |
 | F2 | **Fog volumes as brush entities** | A `fog_volume` entity in TrenchBroom. Fog parameters blend as the player enters a volume. |
 | F3 | **Volumetric fog** (froxel grid) | Light scattering from dynamic lights and the flashlight, with light shafts through fog. The signature horror effect. Needs L3 shadow maps. |
@@ -282,11 +284,12 @@ Found in review. Each is cheaper now than once Phase 1 builds on top of it.
 
 ### Phase 1 — First world (2–4 weeks) — in progress
 - ✅ Fly camera: `engine::FlyCamera`, with mouse look through cursor capture (click to capture, Esc to release) and arrow-key look as a fallback.
-- ✅ Textured meshes, nearest-neighbor sampling, texture hot reload through the asset registry. PNG only; no mipmaps (distant surfaces shimmer, as in software renderers).
-- Mipmaps as a config toggle, so the shimmer becomes a choice. Small; fits alongside the palette post-pass.
+- ✅ Textured meshes, nearest-neighbor sampling, texture hot reload through the asset registry. PNG only.
+- ✅ Mipmaps as a config toggle (`Video::mipmaps`: off, nearest, linear). Default nearest, as Quake's software renderer did. Chains are built on the CPU at upload, averaged in linear light.
+- ✅ Distance fog (F0): `frame.fog`, linear / exp / exp², background in the fog color.
+- ✅ Retro post-pass: palette quantization and ordered dither (`frame.quantize`: off, nearest, dithered). Its own low-res pass (`post.wgsl`) rather than inside `blit.wgsl`, so captures and headless tests see it and the dither stays on low-res pixels. Default 256-color palette in `assets/palettes/default.png`.
 - Load a map: ericw-tools BSP loader as the shortcut. Needs ericw-tools and a test map built in TrenchBroom (or a generated `.map`).
-- Baked lightmaps (L1) and distance fog (F0). The vertex format already has `lightmap_uv`.
-- Retro post-pass: palette LUT and dithering toggle, in `blit.wgsl`.
+- Baked lightmaps (L1). The vertex format already has `lightmap_uv`.
 - Add a reference-image test: capture a known view of a test map and compare it against a stored PNG.
 - **Milestone:** fly through a lit, fogged TrenchBroom level that looks like 1997.
 
@@ -380,7 +383,7 @@ Check storefront rules: Steam requires disclosure of AI-generated content.
 - [ ] Entity model: light ECS or flat struct with optional components.
 - [ ] Gameplay direction: action FPS, survival horror, or a hybrid. This can wait until Phase 5.
 - [ ] Save model: save rooms, checkpoints, or save anywhere.
-- [ ] How far to push the retro look: strict 256-color palette, or a "retro-inspired" look with modern lighting.
+- [ ] How far to push the retro look: strict 256-color palette, or a "retro-inspired" look with modern lighting. Both are now runtime settings (`frame.quantize`), so this can be decided by eye.
 
 ---
 

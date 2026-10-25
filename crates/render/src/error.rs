@@ -57,6 +57,14 @@ pub enum RenderError {
         /// Largest supported dimension.
         max: u32,
     },
+    /// The palette image has more pixels than the shader holds.
+    #[error("palette has {colors} colors, max {max}")]
+    PaletteTooLarge {
+        /// Pixels in the image.
+        colors: usize,
+        /// Largest supported palette.
+        max: usize,
+    },
     /// The texture handle was destroyed.
     #[error("unknown or destroyed texture")]
     UnknownTexture,

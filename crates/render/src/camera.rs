@@ -32,6 +32,11 @@ impl Camera {
         }
     }
 
+    /// World-space position; fog measures distance from here.
+    pub(crate) fn eye(&self) -> Vec3 {
+        self.view.inverse().w_axis.truncate()
+    }
+
     pub(crate) fn view_proj(&self, aspect: f32) -> Mat4 {
         // wgpu NDC matches D3D: depth 0..1, Y up.
         let proj = proj::directx::perspective(self.fov_y, aspect, self.near, self.far);
@@ -67,6 +72,11 @@ mod tests {
 
         assert!(near.z.abs() < EPS);
         assert!((far.z - 1.0).abs() < EPS);
+    }
+
+    #[test]
+    fn eye_recovers_look_at_position() {
+        assert!((camera().eye() - Vec3::new(0.0, 0.0, 5.0)).length() < EPS);
     }
 
     #[test]

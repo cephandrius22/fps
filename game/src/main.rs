@@ -1,16 +1,17 @@
 //! Sandbox: fly around a tiled floor with textured crates and a spinning
-//! colored cube, at 640×360 upscaled.
+//! colored cube, in fog, at 640×360 upscaled.
 //!
-//! Click to capture the mouse; Esc releases it, Esc again quits. Edit
-//! assets/shaders/*.wgsl or assets/textures/*.png while running to see
+//! Click to capture the mouse; Esc releases it, Esc again quits. F1
+//! toggles fog, F2 cycles palette quantization. Edit assets/shaders/*.wgsl,
+//! assets/textures/*.png or assets/palettes/*.png while running to see
 //! them reload.
 
 mod shapes;
 
 use engine::math::{Mat4, Quat, Vec3};
 use engine::{
-    BoxError, Button, Config, CursorMode, FlyCamera, Frame, Game, Gfx, Key, MeshHandle, MouseLook,
-    TextureHandle, Tick,
+    BoxError, Button, Config, CursorMode, Falloff, FlyCamera, Fog, Frame, Game, Gfx, Key,
+    MeshHandle, MouseLook, Quantize, TextureHandle, Tick,
 };
 use shapes::Tint;
 
@@ -27,6 +28,14 @@ const SPIN_SPEED: f32 = 1.2;
 const SPIN_AT: Vec3 = Vec3::new(0.0, 2.5, 0.0);
 /// Tilted so three faces show at once. Normalized at use.
 const SPIN_AXIS: Vec3 = Vec3::new(0.3, 1.0, 0.2);
+
+/// Gray-blue mist: crates clear nearby, the floor's edge (20 m) gone.
+const MIST: Fog = Fog {
+    color: [0.10, 0.11, 0.13],
+    falloff: Falloff::Exp2 { density: 0.08 },
+};
+const FOG_KEY: Key = Key::F1;
+const QUANTIZE_KEY: Key = Key::F2;
 
 /// Crate positions (bottom-center on the floor) and yaw, radians.
 const CRATES: [(Vec3, f32); 5] = [
@@ -49,6 +58,8 @@ struct Assets {
 struct Sandbox {
     assets: Option<Assets>,
     camera: FlyCamera,
+    fog: Option<Fog>,
+    quantize: Quantize,
     /// Spin angle at the previous and current tick, for interpolation.
     prev_angle: f32,
     angle: f32,
@@ -59,6 +70,8 @@ impl Sandbox {
         Self {
             assets: None,
             camera: FlyCamera::new(START, 0.0, START_PITCH),
+            fog: Some(MIST),
+            quantize: Quantize::Dithered,
             prev_angle: 0.0,
             angle: 0.0,
         }
@@ -81,6 +94,28 @@ impl Sandbox {
             tick.quit();
         }
     }
+
+    /// F1: fog on/off. F2: palette off → nearest → dithered → off.
+    fn handle_look_keys(&mut self, tick: &Tick) {
+        if tick.input.was_pressed(FOG_KEY) {
+            self.fog = match self.fog {
+                Some(_) => None,
+                None => Some(MIST),
+            };
+        }
+
+        if tick.input.was_pressed(QUANTIZE_KEY) {
+            self.quantize = next_quantize(self.quantize);
+        }
+    }
+}
+
+fn next_quantize(quantize: Quantize) -> Quantize {
+    match quantize {
+        Quantize::Off => Quantize::Nearest,
+        Quantize::Nearest => Quantize::Dithered,
+        Quantize::Dithered => Quantize::Off,
+    }
 }
 
 impl Game for Sandbox {
@@ -92,11 +127,13 @@ impl Game for Sandbox {
             crate_texture: gfx.load_texture("textures/crate.png")?,
             floor_texture: gfx.load_texture("textures/floor.png")?,
         });
+        gfx.load_palette("palettes/default.png")?;
         Ok(())
     }
 
     fn tick(&mut self, tick: &mut Tick) {
         Self::handle_cursor(tick);
+        self.handle_look_keys(tick);
 
         let look = match tick.cursor() {
             CursorMode::Captured => MouseLook::Enabled,
@@ -114,6 +151,8 @@ impl Game for Sandbox {
         };
 
         frame.camera = self.camera.camera(frame.alpha);
+        frame.fog = self.fog;
+        frame.quantize = self.quantize;
         frame.draw_textured(assets.floor, assets.floor_texture, Mat4::IDENTITY);
 
         for (base, yaw) in CRATES {
@@ -138,4 +177,22 @@ fn main() -> anyhow::Result<()> {
 
     engine::run(config, Sandbox::new())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quantize_cycle_visits_every_mode_and_wraps() {
+        let mut mode = Quantize::Off;
+        let mut seen = Vec::new();
+
+        for _ in 0..3 {
+            mode = next_quantize(mode);
+            seen.push(mode);
+        }
+
+        assert_eq!(seen, [Quantize::Nearest, Quantize::Dithered, Quantize::Off]);
+    }
 }

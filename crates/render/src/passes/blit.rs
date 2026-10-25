@@ -1,4 +1,4 @@
-//! Upscale pass: low-res target → window, nearest-neighbor, letterboxed.
+//! Upscale pass: low-res output → window, nearest-neighbor, letterboxed.
 //!
 //!   ┌──────────── window ────────────┐
 //!   │ bar │      640×360 × k     │ bar │
@@ -65,7 +65,7 @@ impl BlitPass {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&source_target.color),
+                    resource: wgpu::BindingResource::TextureView(&source_target.output_srgb),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,

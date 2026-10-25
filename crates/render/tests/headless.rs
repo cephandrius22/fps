@@ -4,10 +4,11 @@
 mod common;
 
 use base::Image;
-use common::{HEIGHT, WIDTH, quad, renderer};
+use common::{HEIGHT, WIDTH, quad, renderer, renderer_with};
 use glam::{Mat4, Vec3};
 use render::{
-    Camera, Draw, FrameView, MeshId, RenderConfig, RenderError, Renderer, Shader, TextureId,
+    Camera, Draw, Falloff, Fog, FrameView, MeshId, Mipmaps, Quantize, RenderConfig, RenderError,
+    Renderer, Shader, TextureId,
 };
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -18,17 +19,73 @@ const CENTER: (u32, u32) = (WIDTH / 2, HEIGHT / 2);
 /// The unit quad at the test camera spans ~±18 px around the center, so
 /// ±9 px lands in the middle of each texel of a 2×2 texture.
 const QUADRANT: u32 = 9;
+/// Camera to quad center, meters.
+const QUAD_DISTANCE: f32 = 3.0;
+const FOG_BLUE: [f32; 3] = [0.0, 0.0, 1.0];
+/// Linear 0.214 encodes to sRGB ~0.5: halfway between black and white
+/// in the encoded space the palette pass works in.
+const MID_GRAY: [f32; 3] = [0.214; 3];
 
 fn camera() -> Camera {
-    Camera::look_at(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, 60f32.to_radians())
+    let eye = Vec3::new(0.0, 0.0, QUAD_DISTANCE);
+    Camera::look_at(eye, Vec3::ZERO, 60f32.to_radians())
 }
 
 fn draw(renderer: &mut Renderer, draws: &[Draw]) -> Image {
+    draw_with(renderer, draws, None, Quantize::Off)
+}
+
+fn draw_with(
+    renderer: &mut Renderer,
+    draws: &[Draw],
+    fog: Option<Fog>,
+    quantize: Quantize,
+) -> Image {
     renderer.render(&FrameView {
         camera: &camera(),
         draws,
+        fog,
+        quantize,
     });
     renderer.capture().unwrap()
+}
+
+fn fog(color: [f32; 3], falloff: Falloff) -> Option<Fog> {
+    Some(Fog { color, falloff })
+}
+
+/// Fog so thick everything past 1 m is solid `color`, background too.
+fn solid_fog(color: [f32; 3]) -> Option<Fog> {
+    fog(
+        color,
+        Falloff::Linear {
+            start: 0.0,
+            end: 1.0,
+        },
+    )
+}
+
+fn center(shot: &Image) -> [u8; 4] {
+    shot.pixel(CENTER.0, CENTER.1).unwrap()
+}
+
+fn palette(colors: &[[u8; 3]]) -> Image {
+    let rgba = colors
+        .iter()
+        .flat_map(|&[r, g, b]| [r, g, b, 255])
+        .collect();
+    Image::new(colors.len() as u32, 1, rgba).unwrap()
+}
+
+/// 1-pixel black/white checker, `size`² pixels.
+fn checker(size: u32) -> Image {
+    let rgba = (0..size * size)
+        .flat_map(|i| {
+            let on = (i % size + i / size).is_multiple_of(2);
+            [if on { 255 } else { 0 }; 3].into_iter().chain([255])
+        })
+        .collect();
+    Image::new(size, size, rgba).unwrap()
 }
 
 fn at(mesh: MeshId, model: Mat4) -> Draw {
@@ -157,7 +214,7 @@ fn good_shader_reload_takes_effect() {
 
     // Same interface as mesh.wgsl, but paints everything green.
     let green = common::load_shader(Shader::Mesh).unwrap().replace(
-        "return vec4<f32>(base.rgb * shade, base.a);",
+        "return vec4<f32>(apply_fog(lit, in.world), base.a);",
         "return vec4<f32>(0.0, 1.0, 0.0, 1.0);",
     );
     r.reload_shader(Shader::Mesh, &green).unwrap();
@@ -289,4 +346,170 @@ fn oversized_texture_is_rejected() {
         matches!(err, RenderError::TextureTooLarge { .. }),
         "{err:?}"
     );
+}
+
+/// A 64-texel checker squeezed into ~9 px: without mips neighboring
+/// pixels hit different texels (black next to lit white); with mips a
+/// smaller level has averaged the checker to one flat gray.
+#[test]
+fn mipmaps_average_minified_textures() {
+    const INNER: u32 = 2;
+    let tiny = Mat4::from_scale(Vec3::splat(0.25));
+    let sample = |mipmaps| {
+        let mut r = renderer_with(mipmaps)?;
+        let mesh = r.create_mesh(&quad(WHITE));
+        let texture = r.create_texture(&checker(64)).unwrap();
+        let small = Draw {
+            model: tiny,
+            ..textured(mesh, texture)
+        };
+        let shot = draw(&mut r, &[small]);
+
+        // Red channel of the quad's inner 5×5 pixels.
+        let inner = (CENTER.1 - INNER..=CENTER.1 + INNER)
+            .flat_map(|y| (CENTER.0 - INNER..=CENTER.0 + INNER).map(move |x| (x, y)))
+            .map(|(x, y)| shot.pixel(x, y).unwrap()[0])
+            .collect::<Vec<_>>();
+        Some(inner)
+    };
+
+    let Some(off) = sample(Mipmaps::Off) else {
+        return;
+    };
+    let mipped = sample(Mipmaps::Nearest).unwrap();
+
+    let distinct = |px: &[u8]| px.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct(&off) > 1 && off.contains(&0), "off: {off:?}");
+    assert_eq!(distinct(&mipped), 1, "mipped: {mipped:?}");
+    assert!(mipped[0] > 0, "mipped to black: {mipped:?}");
+}
+
+#[test]
+fn solid_fog_hides_geometry_and_colors_background() {
+    let Some(mut r) = renderer() else {
+        return;
+    };
+    let mesh = r.create_mesh(&quad(RED));
+
+    let shot = draw_with(
+        &mut r,
+        &[at(mesh, Mat4::IDENTITY)],
+        solid_fog(FOG_BLUE),
+        Quantize::Off,
+    );
+
+    assert_eq!(center(&shot), [0, 0, 255, 255]);
+    assert_eq!(shot.pixel(0, 0), Some([0, 0, 255, 255]));
+}
+
+#[test]
+fn fog_blends_partway_inside_linear_band() {
+    let Some(mut r) = renderer() else {
+        return;
+    };
+    let mesh = r.create_mesh(&quad(RED));
+    let band = Falloff::Linear {
+        start: QUAD_DISTANCE - 1.0,
+        end: QUAD_DISTANCE + 1.0,
+    };
+
+    let shot = draw_with(
+        &mut r,
+        &[at(mesh, Mat4::IDENTITY)],
+        fog(FOG_BLUE, band),
+        Quantize::Off,
+    );
+    let px = center(&shot);
+
+    // Half lit red, half fog blue.
+    assert!(px[0] > 60 && px[0] < 250, "red share {px:?}");
+    assert!(px[2] > 100 && px[2] < 250, "blue share {px:?}");
+}
+
+#[test]
+fn thin_exponential_fog_barely_tints() {
+    let Some(mut r) = renderer() else {
+        return;
+    };
+    let mesh = r.create_mesh(&quad(RED));
+    let thin = fog(FOG_BLUE, Falloff::Exp2 { density: 0.001 });
+
+    let clear = draw(&mut r, &[at(mesh, Mat4::IDENTITY)]);
+    let fogged = draw_with(&mut r, &[at(mesh, Mat4::IDENTITY)], thin, Quantize::Off);
+
+    assert_eq!(center(&fogged), center(&clear));
+}
+
+#[test]
+fn nearest_quantize_outputs_only_palette_colors() {
+    let Some(mut r) = renderer() else {
+        return;
+    };
+    let mesh = r.create_mesh(&quad(RED));
+    let colors = [[10, 20, 30], [200, 50, 50]];
+    r.set_palette(&palette(&colors)).unwrap();
+
+    let shot = draw_with(&mut r, &[at(mesh, Mat4::IDENTITY)], None, Quantize::Nearest);
+
+    assert_eq!(center(&shot), [200, 50, 50, 255]);
+    for &[r, g, b, a] in shot.rgba().as_chunks::<4>().0 {
+        assert!(
+            colors.contains(&[r, g, b]) && a == 255,
+            "{:?}",
+            [r, g, b, a]
+        );
+    }
+}
+
+#[test]
+fn quantize_is_a_no_op_without_palette_or_when_off() {
+    let Some(mut r) = renderer() else {
+        return;
+    };
+    let mesh = r.create_mesh(&quad(RED));
+    let draws = [at(mesh, Mat4::IDENTITY)];
+
+    let plain = draw(&mut r, &draws);
+    assert_eq!(draw_with(&mut r, &draws, None, Quantize::Nearest), plain);
+
+    r.set_palette(&palette(&[[0, 0, 0]])).unwrap();
+    assert_eq!(draw(&mut r, &draws), plain);
+}
+
+/// A flat mid-gray between black and white: nearest picks one for
+/// every pixel; the dither splits it into a repeating 4×4 pattern.
+#[test]
+fn dither_breaks_flat_color_into_4x4_pattern() {
+    let Some(mut r) = renderer() else {
+        return;
+    };
+    r.set_palette(&palette(&[[0, 0, 0], [255, 255, 255]]))
+        .unwrap();
+    let gray = solid_fog(MID_GRAY);
+
+    let banded = draw_with(&mut r, &[], gray, Quantize::Nearest);
+    let banded_px = banded.rgba().as_chunks::<4>().0;
+    assert!(banded_px.iter().all(|px| *px == banded_px[0]));
+
+    let dithered = draw_with(&mut r, &[], gray, Quantize::Dithered);
+    let px = |x, y| dithered.pixel(x, y).unwrap();
+    let whites = (0..4)
+        .flat_map(|y| (0..4).map(move |x| (x, y)))
+        .filter(|&(x, y)| px(x, y)[0] == 255)
+        .count();
+
+    assert!((4..=12).contains(&whites), "{whites} of 16 white");
+    for (x, y) in [(0, 0), (1, 2), (3, 3)] {
+        assert_eq!(px(x, y), px(x + 4, y + 8), "pattern repeats every 4 px");
+    }
+}
+
+#[test]
+fn bad_post_shader_is_rejected() {
+    let Some(mut r) = renderer() else {
+        return;
+    };
+
+    let err = r.reload_shader(Shader::Post, "fn broken(").unwrap_err();
+    assert!(matches!(err, RenderError::Validation { .. }), "{err:?}");
 }

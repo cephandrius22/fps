@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use render::test_support::GpuTest;
-use render::{MeshData, RenderConfig, Shader, Vertex};
+use render::{MeshData, Mipmaps, RenderConfig, Shader, Vertex};
 
 pub const WIDTH: u32 = 64;
 pub const HEIGHT: u32 = 64;
@@ -17,6 +17,7 @@ pub fn shader_dir() -> PathBuf {
 pub fn shader_file(shader: Shader) -> &'static str {
     match shader {
         Shader::Mesh => "mesh.wgsl",
+        Shader::Post => "post.wgsl",
         Shader::Blit => "blit.wgsl",
     }
 }
@@ -27,9 +28,15 @@ pub fn load_shader(shader: Shader) -> std::io::Result<String> {
 
 /// Small headless renderer, or None (test skips) without a GPU.
 pub fn renderer() -> Option<GpuTest> {
+    renderer_with(RenderConfig::default().mipmaps)
+}
+
+/// As `renderer`, with a chosen mipmap setting.
+pub fn renderer_with(mipmaps: Mipmaps) -> Option<GpuTest> {
     let config = RenderConfig {
         internal_width: WIDTH,
         internal_height: HEIGHT,
+        mipmaps,
         ..Default::default()
     };
 

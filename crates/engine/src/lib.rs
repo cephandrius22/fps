@@ -19,7 +19,8 @@ pub use base::{BoxError, Button, Image, Key};
 pub use error::EngineError;
 pub use fly::{FlyCamera, FlySettings, MouseLook};
 pub use gfx::{
-    Camera, Frame, Gfx, MeshData, MeshHandle, Scaling, TextureHandle, VSync, Vertex, Video,
+    Camera, Falloff, Fog, Frame, Gfx, MeshData, MeshHandle, Mipmaps, Quantize, Scaling,
+    TextureHandle, VSync, Vertex, Video,
 };
 pub use glam as math;
 pub use input::{CursorMode, Input};

@@ -3,19 +3,22 @@
 //! Per-draw model matrices live in one storage buffer; draw `i` reads
 //! entry `i` via `instance_index`, so there is one upload per frame.
 //!
+//! ```text
 //!   group 0: frame uniforms + model matrices (once per pass)
 //!   group 1: texture + sampler (only when the texture changes)
+//! ```
 
 use crate::error::Result;
-use glam::Mat4;
+use glam::{Mat4, Vec4};
 
-use crate::Draw;
 use crate::mesh::{MeshStore, Vertex};
 use crate::shader::{checked, compile};
 use crate::target::{COLOR_FORMAT, DEPTH_FORMAT, LowRes};
 use crate::texture::TextureStore;
+use crate::{Camera, Draw, Falloff, Fog};
 
 const INITIAL_CAPACITY: usize = 256;
+/// Background without fog: near-black, a little blue.
 const CLEAR: wgpu::Color = wgpu::Color {
     r: 0.02,
     g: 0.02,
@@ -23,11 +26,74 @@ const CLEAR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// `Frame.fog_mode` values; must match the FOG_* constants in mesh.wgsl.
+mod fog_mode {
+    pub const OFF: u32 = 0;
+    pub const LINEAR: u32 = 1;
+    pub const EXP: u32 = 2;
+    pub const EXP2: u32 = 3;
+}
+
 /// Must match `Frame` in mesh.wgsl.
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct FrameUniforms {
     view_proj: Mat4,
+    /// World-space camera position; w unused.
+    eye: Vec4,
+    /// Linear RGB; a unused.
+    fog_color: Vec4,
+    fog_mode: u32,
+    fog_start: f32,
+    fog_end: f32,
+    fog_density: f32,
+}
+
+impl FrameUniforms {
+    fn new(camera: &Camera, aspect: f32, fog: Option<Fog>) -> Self {
+        let mut frame = Self {
+            view_proj: camera.view_proj(aspect),
+            eye: camera.eye().extend(1.0),
+            fog_color: Vec4::ZERO,
+            fog_mode: fog_mode::OFF,
+            fog_start: 0.0,
+            fog_end: 0.0,
+            fog_density: 0.0,
+        };
+        let Some(fog) = fog else {
+            return frame;
+        };
+
+        frame.fog_color = Vec4::from((glam::Vec3::from(fog.color), 1.0));
+        match fog.falloff {
+            Falloff::Linear { start, end } => {
+                frame.fog_mode = fog_mode::LINEAR;
+                frame.fog_start = start;
+                frame.fog_end = end;
+            }
+            Falloff::Exp { density } => {
+                frame.fog_mode = fog_mode::EXP;
+                frame.fog_density = density;
+            }
+            Falloff::Exp2 { density } => {
+                frame.fog_mode = fog_mode::EXP2;
+                frame.fog_density = density;
+            }
+        }
+
+        frame
+    }
+}
+
+/// Empty background: the fog color when foggy, so geometry fading into
+/// fog meets a matching sky instead of a silhouette.
+fn background(fog: Option<Fog>) -> wgpu::Color {
+    let Some(fog) = fog else {
+        return CLEAR;
+    };
+
+    let [r, g, b] = fog.color.map(f64::from);
+    wgpu::Color { r, g, b, a: 1.0 }
 }
 
 pub(crate) struct MeshPass {
@@ -40,6 +106,8 @@ pub(crate) struct MeshPass {
     bind_group: wgpu::BindGroup,
     /// Reused each frame to avoid a per-frame allocation.
     models: Vec<Mat4>,
+    /// This frame's background, set by `prepare`.
+    clear: wgpu::Color,
 }
 
 impl MeshPass {
@@ -81,6 +149,7 @@ impl MeshPass {
             capacity: INITIAL_CAPACITY,
             bind_group,
             models: Vec::with_capacity(INITIAL_CAPACITY),
+            clear: CLEAR,
         })
     }
 
@@ -89,12 +158,15 @@ impl MeshPass {
         Ok(())
     }
 
-    /// Uploads camera and model matrices. Grows the buffer if needed.
+    /// Uploads camera, fog and model matrices. Grows the buffer if
+    /// needed.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        view_proj: Mat4,
+        camera: &Camera,
+        aspect: f32,
+        fog: Option<Fog>,
         draws: &[Draw],
     ) {
         if draws.len() > self.capacity {
@@ -104,8 +176,9 @@ impl MeshPass {
                 create_bind_group(device, &self.bind_layout, &self.frame_buf, &self.model_buf);
         }
 
-        let frame = FrameUniforms { view_proj };
+        let frame = FrameUniforms::new(camera, aspect, fog);
         queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&frame));
+        self.clear = background(fog);
 
         self.models.clear();
         self.models.extend(draws.iter().map(|draw| draw.model));
@@ -123,11 +196,11 @@ impl MeshPass {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("mesh-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target.color,
+                view: &target.scene,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(CLEAR),
+                    load: wgpu::LoadOp::Clear(self.clear),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -258,10 +331,62 @@ fn create_bind_group(
 mod tests {
     use super::*;
 
-    /// WGSL `mat4x4<f32>` is 64 bytes; uniform structs must match exactly.
+    use glam::Vec3;
+
+    const FOG_COLOR: [f32; 3] = [0.1, 0.2, 0.3];
+
+    fn camera() -> Camera {
+        Camera::look_at(Vec3::new(1.0, 2.0, 3.0), Vec3::ZERO, 1.0)
+    }
+
+    fn fog(falloff: Falloff) -> Option<Fog> {
+        Some(Fog {
+            color: FOG_COLOR,
+            falloff,
+        })
+    }
+
+    /// WGSL layout: mat4 (64) + two vec4 (32) + four scalars (16).
     #[test]
     fn frame_uniforms_match_wgsl_layout() {
-        assert_eq!(size_of::<FrameUniforms>(), 64);
-        assert_eq!(size_of::<Mat4>(), 64);
+        assert_eq!(size_of::<FrameUniforms>(), 112);
+        assert_eq!(size_of::<FrameUniforms>() % 16, 0);
+    }
+
+    #[test]
+    fn uniforms_carry_eye_and_no_fog_by_default() {
+        let frame = FrameUniforms::new(&camera(), 1.0, None);
+
+        assert!((frame.eye.truncate() - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-4);
+        assert_eq!(frame.fog_mode, fog_mode::OFF);
+    }
+
+    #[test]
+    fn each_falloff_encodes_its_mode_and_parameters() {
+        let linear = FrameUniforms::new(
+            &camera(),
+            1.0,
+            fog(Falloff::Linear {
+                start: 2.0,
+                end: 9.0,
+            }),
+        );
+        assert_eq!(linear.fog_mode, fog_mode::LINEAR);
+        assert_eq!((linear.fog_start, linear.fog_end), (2.0, 9.0));
+        assert_eq!(linear.fog_color, Vec4::new(0.1, 0.2, 0.3, 1.0));
+
+        let exp = FrameUniforms::new(&camera(), 1.0, fog(Falloff::Exp { density: 0.5 }));
+        assert_eq!((exp.fog_mode, exp.fog_density), (fog_mode::EXP, 0.5));
+
+        let exp2 = FrameUniforms::new(&camera(), 1.0, fog(Falloff::Exp2 { density: 0.25 }));
+        assert_eq!((exp2.fog_mode, exp2.fog_density), (fog_mode::EXP2, 0.25));
+    }
+
+    #[test]
+    fn background_is_fog_color_when_foggy() {
+        assert_eq!(background(None), CLEAR);
+
+        let bg = background(fog(Falloff::Exp { density: 1.0 }));
+        assert_eq!([bg.r, bg.g, bg.b], FOG_COLOR.map(f64::from));
     }
 }

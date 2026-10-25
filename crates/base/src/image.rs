@@ -6,6 +6,7 @@ use std::io::{BufWriter, Cursor};
 use std::path::{Path, PathBuf};
 
 const BYTES_PER_PIXEL: usize = 4;
+const CHANNEL_MAX: f32 = u8::MAX as f32;
 
 /// Why an image could not be built, read or written.
 #[derive(Debug, thiserror::Error)]
@@ -98,6 +99,81 @@ impl Image {
         let i = (y as usize * self.width as usize + x as usize) * BYTES_PER_PIXEL;
         self.rgba[i..i + BYTES_PER_PIXEL].try_into().ok()
     }
+
+    /// Next mip level: half size (rounded down, at least 1), each pixel
+    /// the average of up to 2×2 source pixels. Color is averaged in
+    /// linear light, so a black/white checker becomes mid-gray (188),
+    /// not the too-dark 128. Alpha is averaged as is.
+    pub fn half(&self) -> Image {
+        let width = (self.width / 2).max(1);
+        let height = (self.height / 2).max(1);
+        let mut rgba = Vec::with_capacity(width as usize * height as usize * BYTES_PER_PIXEL);
+
+        for y in 0..height {
+            for x in 0..width {
+                rgba.extend(self.box_average(x * 2, y * 2));
+            }
+        }
+
+        Self {
+            width,
+            height,
+            rgba,
+        }
+    }
+
+    /// Average of the 2×2 block at (x, y), clipped to the image: a 1-wide
+    /// image averages vertical pairs only.
+    fn box_average(&self, x: u32, y: u32) -> [u8; 4] {
+        let mut sum = [0.0_f32; 4];
+        let mut count = 0.0;
+
+        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let Some(px) = self.pixel(x + dx, y + dy) else {
+                continue;
+            };
+
+            for c in 0..3 {
+                sum[c] += srgb_to_linear(px[c]);
+            }
+            sum[3] += f32::from(px[3]) / CHANNEL_MAX;
+            count += 1.0;
+        }
+
+        let [r, g, b, a] = sum.map(|total| total / count);
+        [
+            linear_to_srgb(r),
+            linear_to_srgb(g),
+            linear_to_srgb(b),
+            unorm_to_u8(a),
+        ]
+    }
+}
+
+/// sRGB-encoded byte → linear 0..1 (IEC 61966-2-1 transfer curve).
+fn srgb_to_linear(c: u8) -> f32 {
+    let c = f32::from(c) / CHANNEL_MAX;
+
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Linear 0..1 → sRGB-encoded byte; inverse of `srgb_to_linear`.
+fn linear_to_srgb(c: f32) -> u8 {
+    let encoded = if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+
+    unorm_to_u8(encoded)
+}
+
+fn unorm_to_u8(c: f32) -> u8 {
+    (c.clamp(0.0, 1.0) * CHANNEL_MAX).round() as u8
 }
 
 /// Decodes a PNG of any color type and bit depth to RGBA8. Palette,
@@ -206,6 +282,53 @@ mod tests {
         assert_eq!(image.pixel(1, 0), Some([5, 6, 7, 8]));
         assert_eq!(image.pixel(0, 1), None);
         assert_eq!(Image::solid([9, 9, 9, 9]).pixel(0, 0), Some([9, 9, 9, 9]));
+    }
+
+    #[test]
+    fn half_averages_in_linear_light() {
+        // Black/white checker: linear mean 0.5, which sRGB encodes as 188.
+        #[rustfmt::skip]
+        let checker = Image::new(2, 2, vec![
+            0, 0, 0, 255,          255, 255, 255, 255,
+            255, 255, 255, 255,    0, 0, 0, 255,
+        ]).unwrap();
+
+        let half = checker.half();
+
+        assert_eq!((half.width(), half.height()), (1, 1));
+        assert_eq!(half.pixel(0, 0), Some([188, 188, 188, 255]));
+    }
+
+    #[test]
+    fn half_keeps_uniform_colors_exact() {
+        let image = Image::new(4, 2, [7, 99, 200, 128].repeat(8)).unwrap();
+        let half = image.half();
+
+        assert_eq!((half.width(), half.height()), (2, 1));
+        assert!(
+            half.rgba()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|px| *px == [7, 99, 200, 128])
+        );
+    }
+
+    #[test]
+    fn half_of_thin_image_stops_at_one_pixel() {
+        let column = gradient(1, 4);
+        let half = column.half();
+        assert_eq!((half.width(), half.height()), (1, 2));
+
+        let dot = Image::solid([1, 2, 3, 4]);
+        assert_eq!(dot.half(), dot);
+    }
+
+    #[test]
+    fn srgb_round_trips_every_byte() {
+        for c in 0..=u8::MAX {
+            assert_eq!(linear_to_srgb(srgb_to_linear(c)), c);
+        }
     }
 
     #[test]

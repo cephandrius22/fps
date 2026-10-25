@@ -34,6 +34,88 @@ pub enum VSync {
     Off,
 }
 
+/// Texture mip chains. Without them, textures far away or at grazing
+/// angles shimmer as the camera moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mipmaps {
+    /// Base level only: maximum shimmer.
+    Off,
+    /// Hard switches between levels, like Quake's software renderer.
+    Nearest,
+    /// Blends between levels: no switch lines, softer distance.
+    Linear,
+}
+
+/// How fog thickens with distance from the camera.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Falloff {
+    /// Clear until `start`, solid fog from `end` (meters).
+    Linear {
+        /// Distance where fog begins.
+        start: f32,
+        /// Distance where fog is solid. Must exceed `start`.
+        end: f32,
+    },
+    /// Visibility e^(−density·d): thickens from the camera outward.
+    Exp {
+        /// Per meter. 0.05 halves visibility every ~14 m.
+        density: f32,
+    },
+    /// Visibility e^(−(density·d)²): clear nearby, then closes in fast.
+    Exp2 {
+        /// Per meter.
+        density: f32,
+    },
+}
+
+/// Distance fog. Surfaces blend toward `color` with distance; empty
+/// background is drawn in `color`, so far geometry fades out seamlessly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fog {
+    /// Linear RGB.
+    pub color: [f32; 3],
+    /// Thickening curve.
+    pub falloff: Falloff,
+}
+
+impl Fog {
+    fn to_render(self) -> render::Fog {
+        let falloff = match self.falloff {
+            Falloff::Linear { start, end } => render::Falloff::Linear { start, end },
+            Falloff::Exp { density } => render::Falloff::Exp { density },
+            Falloff::Exp2 { density } => render::Falloff::Exp2 { density },
+        };
+
+        render::Fog {
+            color: self.color,
+            falloff,
+        }
+    }
+}
+
+/// Palette quantization of the final low-res image. Uses the palette
+/// from [`Gfx::load_palette`]; without one it has no effect.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Quantize {
+    /// Full color.
+    #[default]
+    Off,
+    /// Each pixel becomes its nearest palette color. Gradients band.
+    Nearest,
+    /// Ordered dither first, so bands become a fixed pixel pattern.
+    Dithered,
+}
+
+impl Quantize {
+    fn to_render(self) -> render::Quantize {
+        match self {
+            Quantize::Off => render::Quantize::Off,
+            Quantize::Nearest => render::Quantize::Nearest,
+            Quantize::Dithered => render::Quantize::Dithered,
+        }
+    }
+}
+
 /// Resolution and presentation settings.
 #[derive(Clone, Copy, Debug)]
 pub struct Video {
@@ -45,6 +127,8 @@ pub struct Video {
     pub scaling: Scaling,
     /// Presentation sync.
     pub vsync: VSync,
+    /// Texture mip chains; fixed at startup.
+    pub mipmaps: Mipmaps,
 }
 
 impl Default for Video {
@@ -54,6 +138,7 @@ impl Default for Video {
             internal_height: 360,
             scaling: Scaling::Fit,
             vsync: VSync::On,
+            mipmaps: Mipmaps::Nearest,
         }
     }
 }
@@ -70,6 +155,11 @@ impl Video {
             vsync: match self.vsync {
                 VSync::On => render::VSync::On,
                 VSync::Off => render::VSync::Off,
+            },
+            mipmaps: match self.mipmaps {
+                Mipmaps::Off => render::Mipmaps::Off,
+                Mipmaps::Nearest => render::Mipmaps::Nearest,
+                Mipmaps::Linear => render::Mipmaps::Linear,
             },
         }
     }
@@ -196,6 +286,27 @@ impl Gfx<'_> {
         Ok(TextureHandle(id))
     }
 
+    /// Loads the palette [`Quantize`] snaps to, e.g. "palettes/default.png":
+    /// every pixel is one color, row-major, at most 256 (16×16). Watched
+    /// like a texture. Replaces any previous palette.
+    pub fn load_palette(&mut self, path: &str) -> Result<(), EngineError> {
+        let load_err = |source: BoxError| EngineError::Load {
+            path: path.to_owned(),
+            source,
+        };
+
+        let image = assets::load_image(self.vfs, path).map_err(load_err)?;
+        self.renderer
+            .set_palette(&image)
+            .map_err(|err| load_err(err.into()))?;
+
+        // One palette at a time: stop watching the previous file.
+        self.registry.forget(Asset::Palette);
+        self.registry.register(path, Asset::Palette);
+
+        Ok(())
+    }
+
     /// Uploads an in-memory image, e.g. a generated pattern. Not watched.
     pub fn create_texture(&mut self, image: &Image) -> Result<TextureHandle, EngineError> {
         Ok(TextureHandle(self.renderer.create_texture(image)?))
@@ -222,12 +333,17 @@ impl Gfx<'_> {
     }
 }
 
-/// Scene description for one rendered frame.
+/// Scene description for one rendered frame. `camera`, `fog` and
+/// `quantize` carry over to the next frame until changed.
 pub struct Frame {
     /// Viewpoint for this frame.
     pub camera: Camera,
     /// Progress from the previous tick to the current one, 0..1.
     pub alpha: f32,
+    /// Distance fog; None for clear air.
+    pub fog: Option<Fog>,
+    /// Palette quantization of the final image.
+    pub quantize: Quantize,
     draws: Vec<Draw>,
 }
 
@@ -236,6 +352,8 @@ impl Frame {
         Self {
             camera: Camera::default(),
             alpha: 0.0,
+            fog: None,
+            quantize: Quantize::Off,
             draws: Vec::new(),
         }
     }
@@ -269,6 +387,8 @@ impl Frame {
         renderer.render(&render::FrameView {
             camera: &self.camera.to_render(),
             draws: &self.draws,
+            fog: self.fog.map(Fog::to_render),
+            quantize: self.quantize.to_render(),
         });
     }
 }
@@ -312,15 +432,64 @@ mod tests {
         let video = Video {
             scaling: Scaling::Integer,
             vsync: VSync::Off,
+            mipmaps: Mipmaps::Linear,
             ..Default::default()
         };
         let r = video.to_render();
 
         assert_eq!(r.scaling, render::Scaling::Integer);
         assert_eq!(r.vsync, render::VSync::Off);
+        assert_eq!(r.mipmaps, render::Mipmaps::Linear);
+        let off = Video {
+            mipmaps: Mipmaps::Off,
+            ..Default::default()
+        };
+        assert_eq!(off.to_render().mipmaps, render::Mipmaps::Off);
+        assert_eq!(
+            Video::default().to_render().mipmaps,
+            render::Mipmaps::Nearest
+        );
         assert_eq!((r.internal_width, r.internal_height), (640, 360));
         assert_eq!(Video::default().to_render().scaling, render::Scaling::Fit);
         assert_eq!(Video::default().to_render().vsync, render::VSync::On);
+    }
+
+    #[test]
+    fn fog_maps_every_falloff() {
+        let fog = |falloff| Fog {
+            color: [0.1, 0.2, 0.3],
+            falloff,
+        };
+        let linear = Falloff::Linear {
+            start: 1.0,
+            end: 2.0,
+        };
+
+        assert_eq!(
+            fog(linear).to_render(),
+            render::Fog {
+                color: [0.1, 0.2, 0.3],
+                falloff: render::Falloff::Linear {
+                    start: 1.0,
+                    end: 2.0
+                },
+            }
+        );
+        assert_eq!(
+            fog(Falloff::Exp { density: 0.5 }).to_render().falloff,
+            render::Falloff::Exp { density: 0.5 }
+        );
+        assert_eq!(
+            fog(Falloff::Exp2 { density: 0.5 }).to_render().falloff,
+            render::Falloff::Exp2 { density: 0.5 }
+        );
+    }
+
+    #[test]
+    fn quantize_maps_every_variant() {
+        assert_eq!(Quantize::Off.to_render(), render::Quantize::Off);
+        assert_eq!(Quantize::Nearest.to_render(), render::Quantize::Nearest);
+        assert_eq!(Quantize::Dithered.to_render(), render::Quantize::Dithered);
     }
 
     #[test]
@@ -343,6 +512,8 @@ mod tests {
         assert!(frame.draws.is_empty());
         assert_eq!(frame.alpha, 0.25);
     }
+
+    const PALETTE: &str = "palettes/default.png";
 
     fn repo_assets() -> Vfs {
         Vfs::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets")).unwrap()
@@ -374,6 +545,28 @@ mod tests {
 
         gfx.destroy_texture(texture);
         assert_eq!(gfx.registry.lookup("textures/crate.png"), None);
+    }
+
+    #[test]
+    fn load_palette_watches_only_the_latest_file() {
+        let vfs = repo_assets();
+        let Some(mut renderer) = headless(&vfs) else {
+            return;
+        };
+        let mut registry = Registry::with_shaders();
+        let mut gfx = Gfx {
+            renderer: &mut renderer,
+            vfs: &vfs,
+            registry: &mut registry,
+        };
+
+        gfx.load_palette(PALETTE).unwrap();
+        assert_eq!(gfx.registry.lookup(PALETTE), Some(Asset::Palette));
+
+        // A 64×64 texture is 4096 colors: too many, so nothing changes.
+        let err = gfx.load_palette("textures/crate.png").unwrap_err();
+        assert!(matches!(&err, EngineError::Load { path, .. } if path == "textures/crate.png"));
+        assert_eq!(gfx.registry.lookup(PALETTE), Some(Asset::Palette));
     }
 
     #[test]

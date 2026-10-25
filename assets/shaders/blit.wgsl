@@ -1,5 +1,5 @@
-// Upscale low-res target to the window. Sampler is nearest-neighbor.
-// Retro post effects (palette LUT, dither) will be added here in Phase 1.
+// Upscale the low-res output to the window. Sampler is nearest-neighbor.
+// Retro effects run before this, at low res, in post.wgsl.
 
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var src_sampler: sampler;

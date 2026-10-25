@@ -15,6 +15,8 @@ use render::{Renderer, Shader, TextureId};
 pub(crate) enum Asset {
     Shader(Shader),
     Texture(TextureId),
+    /// The renderer's one quantization palette.
+    Palette,
 }
 
 /// Reads and decodes an image asset. PNG only for now.
@@ -40,6 +42,10 @@ pub(crate) fn reload(
             let image = load_image(vfs, path)?;
             renderer.replace_texture(id, &image)?;
         }
+        Asset::Palette => {
+            let image = load_image(vfs, path)?;
+            renderer.set_palette(&image)?;
+        }
     }
 
     Ok(())
@@ -49,6 +55,7 @@ pub(crate) fn reload(
 pub(crate) fn shader_path(shader: Shader) -> &'static str {
     match shader {
         Shader::Mesh => "shaders/mesh.wgsl",
+        Shader::Post => "shaders/post.wgsl",
         Shader::Blit => "shaders/blit.wgsl",
     }
 }

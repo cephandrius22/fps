@@ -1,10 +1,16 @@
-//! Renderer. Draws the scene into a low-resolution target, then
-//! upscales it to the window with nearest-neighbor sampling.
+//! Renderer. Draws the scene into a low-resolution target, applies the
+//! retro post-pass there, then upscales to the window with
+//! nearest-neighbor sampling.
 //!
-//!   draws ─► MeshPass ─► low-res color+depth (e.g. 640×360)
-//!                                │
-//!                                ▼
-//!                  BlitPass (nearest, letterboxed) ─► window surface
+//! ```text
+//!   draws ─► MeshPass (lit, fogged) ─► low-res scene color+depth (640×360)
+//!                                             │
+//!                                             ▼
+//!                   PostPass (palette, dither) ─► low-res output ─► capture
+//!                                             │
+//!                                             ▼
+//!                   BlitPass (nearest, letterboxed) ─► window surface
+//! ```
 //!
 //! Knows nothing about files or windowing libraries: shader source
 //! comes from the caller, and any raw window handle works as a target.
@@ -36,7 +42,7 @@ pub use texture::TextureId;
 use error::Result;
 use gpu::Gpu;
 use mesh::MeshStore;
-use passes::{BlitPass, MeshPass};
+use passes::{BlitPass, MeshPass, PostPass};
 use swapchain::Swapchain;
 use target::{COLOR_FORMAT, LowRes};
 use texture::TextureStore;
@@ -47,13 +53,15 @@ use texture::TextureStore;
 pub enum Shader {
     /// Opaque scene geometry.
     Mesh,
+    /// Low-res retro post-pass: palette quantization and dither.
+    Post,
     /// Low-res → window upscale.
     Blit,
 }
 
 impl Shader {
     /// Every shader, for loading all of them up front.
-    pub const ALL: [Shader; 2] = [Shader::Mesh, Shader::Blit];
+    pub const ALL: [Shader; 3] = [Shader::Mesh, Shader::Post, Shader::Blit];
 }
 
 /// Presentation sync.
@@ -74,6 +82,64 @@ pub enum Scaling {
     Fit,
 }
 
+/// Texture mip chains. Without them, textures far away or at grazing
+/// angles shimmer as the camera moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mipmaps {
+    /// Base level only: maximum shimmer.
+    Off,
+    /// Chain with hard switches between levels, like Quake's software
+    /// renderer. Texels stay sharp.
+    Nearest,
+    /// Chain with blends between levels: no visible switch lines, but
+    /// distant surfaces turn softer.
+    Linear,
+}
+
+/// How fog thickens with distance from the camera.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Falloff {
+    /// Clear until `start`, solid fog from `end` (meters).
+    Linear {
+        /// Distance where fog begins.
+        start: f32,
+        /// Distance where fog is solid. Must exceed `start`.
+        end: f32,
+    },
+    /// Visibility e^(−density·d): thickens from the camera outward.
+    Exp {
+        /// Per meter. 0.05 halves visibility every ~14 m.
+        density: f32,
+    },
+    /// Visibility e^(−(density·d)²): clear nearby, then closes in fast.
+    Exp2 {
+        /// Per meter.
+        density: f32,
+    },
+}
+
+/// Distance fog. Surfaces blend toward `color` with distance, and empty
+/// background is drawn in `color`, so far geometry fades out seamlessly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fog {
+    /// Linear RGB.
+    pub color: [f32; 3],
+    /// Thickening curve.
+    pub falloff: Falloff,
+}
+
+/// Palette quantization of the final low-res image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quantize {
+    /// Full color.
+    Off,
+    /// Each pixel becomes its nearest palette color. Gradients band.
+    Nearest,
+    /// Ordered (Bayer 4×4) dither first, so bands become a fixed
+    /// pixel pattern, as on 8-bit displays.
+    Dithered,
+}
+
 /// Renderer settings fixed at creation.
 #[derive(Clone, Copy, Debug)]
 pub struct RenderConfig {
@@ -85,6 +151,8 @@ pub struct RenderConfig {
     pub scaling: Scaling,
     /// Presentation sync.
     pub vsync: VSync,
+    /// Texture mip chains.
+    pub mipmaps: Mipmaps,
 }
 
 impl Default for RenderConfig {
@@ -94,6 +162,7 @@ impl Default for RenderConfig {
             internal_height: 360,
             scaling: Scaling::Fit,
             vsync: VSync::On,
+            mipmaps: Mipmaps::Nearest,
         }
     }
 }
@@ -115,6 +184,11 @@ pub struct FrameView<'a> {
     pub camera: &'a Camera,
     /// Draws in submission order.
     pub draws: &'a [Draw],
+    /// Distance fog; None for clear air.
+    pub fog: Option<Fog>,
+    /// Palette quantization. Needs a palette from
+    /// [`Renderer::set_palette`]; until then it has no effect.
+    pub quantize: Quantize,
 }
 
 /// Anything with raw window handles that can be shared across threads.
@@ -138,6 +212,7 @@ pub struct Renderer {
     meshes: MeshStore,
     textures: TextureStore,
     mesh_pass: MeshPass,
+    post_pass: PostPass,
     blit_pass: BlitPass,
 }
 
@@ -190,8 +265,9 @@ impl Renderer {
                 source: err.into(),
             })
         };
-        let textures = TextureStore::new(&gpu.device, &gpu.queue);
+        let textures = TextureStore::new(&gpu.device, &gpu.queue, config.mipmaps);
         let mesh_pass = MeshPass::new(&gpu.device, textures.layout(), &load(Shader::Mesh)?)?;
+        let post_pass = PostPass::new(&gpu.device, &target, &load(Shader::Post)?)?;
         let blit_pass = BlitPass::new(&gpu.device, output_format, &target, &load(Shader::Blit)?)?;
 
         Ok(Self {
@@ -202,6 +278,7 @@ impl Renderer {
             meshes: MeshStore::default(),
             textures,
             mesh_pass,
+            post_pass,
             blit_pass,
         })
     }
@@ -241,13 +318,26 @@ impl Renderer {
         self.textures.destroy(id)
     }
 
+    /// Sets the palette [`Quantize`] snaps to: every pixel of `colors`,
+    /// row-major, alpha ignored. A 16×16 image holds the 256-color
+    /// maximum. Replaces any previous palette.
+    pub fn set_palette(&mut self, colors: &Image) -> Result<()> {
+        self.post_pass.set_palette(colors)
+    }
+
     /// Draws one frame and presents it. Skips silently when the window
     /// cannot present (minimized, occluded).
     pub fn render(&mut self, view: &FrameView) {
         let aspect = self.target.width as f32 / self.target.height as f32;
-        let view_proj = view.camera.view_proj(aspect);
-        self.mesh_pass
-            .prepare(&self.gpu.device, &self.gpu.queue, view_proj, view.draws);
+        self.mesh_pass.prepare(
+            &self.gpu.device,
+            &self.gpu.queue,
+            view.camera,
+            aspect,
+            view.fog,
+            view.draws,
+        );
+        self.post_pass.prepare(&self.gpu.queue, view.quantize);
 
         let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
         self.mesh_pass.record(
@@ -257,6 +347,7 @@ impl Renderer {
             &self.textures,
             view.draws,
         );
+        self.post_pass.record(&mut encoder, &self.target);
 
         let Some(swapchain) = &mut self.swapchain else {
             self.gpu.queue.submit([encoder.finish()]);
@@ -280,8 +371,9 @@ impl Renderer {
         self.gpu.queue.present(frame);
     }
 
-    /// Last rendered low-res frame, as RGBA8 (sRGB). Blocks until the GPU
-    /// is idle; meant for debug captures and tests, not per-frame use.
+    /// Last rendered low-res frame, after the post-pass, as RGBA8 (sRGB).
+    /// Blocks until the GPU is idle; meant for debug captures and tests,
+    /// not per-frame use.
     pub fn capture(&self) -> Result<Image> {
         capture::read(&self.gpu.device, &self.gpu.queue, &self.target)
     }
@@ -291,6 +383,7 @@ impl Renderer {
     pub fn reload_shader(&mut self, shader: Shader, source: &str) -> Result<()> {
         match shader {
             Shader::Mesh => self.mesh_pass.reload(&self.gpu.device, source),
+            Shader::Post => self.post_pass.reload(&self.gpu.device, source),
             Shader::Blit => self.blit_pass.reload(&self.gpu.device, source),
         }
     }

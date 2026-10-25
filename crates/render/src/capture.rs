@@ -1,4 +1,4 @@
-//! GPU → CPU readback of the low-res target, for screenshots and
+//! GPU → CPU readback of the final low-res image, for screenshots and
 //! automated image checks.
 //!
 //!   color texture ─copy─► staging buffer (rows padded to 256 B) ─map─► RGBA
@@ -24,7 +24,7 @@ pub(crate) fn read(device: &wgpu::Device, queue: &wgpu::Queue, target: &LowRes) 
 
     let mut encoder = device.create_command_encoder(&Default::default());
     encoder.copy_texture_to_buffer(
-        target.color_texture.as_image_copy(),
+        target.output_texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &staging,
             layout: wgpu::TexelCopyBufferLayout {
@@ -33,7 +33,7 @@ pub(crate) fn read(device: &wgpu::Device, queue: &wgpu::Queue, target: &LowRes) 
                 rows_per_image: Some(target.height),
             },
         },
-        target.color_texture.size(),
+        target.output_texture.size(),
     );
     queue.submit([encoder.finish()]);
 
