@@ -13,6 +13,15 @@
 //! Units are meters, right-handed, Y up. No rotation of moving bodies:
 //! a body moves by offset only (doors and platforms slide), and boxes
 //! are always axis-aligned. Knows nothing about entities or input.
+//!
+//! Modules:
+//!
+//! ```text
+//!   brush.rs   Brush, Plane, Face: convex solids, box clipping
+//!   world.rs   World, BodyId, Trace: placed bodies and box traces
+//!   mover.rs   slide, step_slide, ground, snap_down: character movement
+//!   aabb.rs    Aabb
+//! ```
 
 mod aabb;
 mod brush;

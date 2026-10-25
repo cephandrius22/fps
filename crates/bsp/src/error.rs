@@ -50,3 +50,32 @@ pub(crate) type Result<T, E = BspError> = std::result::Result<T, E>;
 pub(crate) fn index_error(what: &'static str, index: i64) -> BspError {
     BspError::Index { what, index }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_name_what_went_wrong() {
+        let cases = [
+            (BspError::Truncated("faces"), "faces is truncated"),
+            (BspError::Version(30), "unsupported BSP version 0x0000001e"),
+            (
+                BspError::LumpBounds("edges"),
+                "edges lump lies outside the file",
+            ),
+            (index_error("vertex", 9), "vertex index 9 out of range"),
+            (
+                BspError::Entities {
+                    line: 3,
+                    message: "expected '{'",
+                },
+                "entities, line 3: expected '{'",
+            ),
+        ];
+
+        for (err, text) in cases {
+            assert_eq!(err.to_string(), text);
+        }
+    }
+}

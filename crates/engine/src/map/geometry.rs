@@ -79,7 +79,7 @@ pub(super) fn meshes(
         let Some(&Surface::Drawn { texels, .. }) = surfaces.get(face.texture) else {
             continue;
         };
-        let light_uvs = lighting.map(|l| l.uvs(index, face_index, face));
+        let light_uvs = lighting.map(|l| l.layout.uvs(index, face_index, face));
 
         let group = groups.entry(face.texture).or_default();
         append_face(group, face, texels, light_uvs.as_deref());
@@ -145,4 +145,108 @@ pub(super) fn colliders(model: &bsp::Model) -> Vec<Brush> {
             brush
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::Vec3;
+
+    use super::*;
+
+    const EPS: f32 = 1e-5;
+
+    /// A 64-unit square on the Quake floor (z = 0), facing up, wound
+    /// counter-clockwise seen from above; texels equal Quake x, y.
+    fn floor_face() -> bsp::Face {
+        let points = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(64.0, 0.0, 0.0),
+            Vec3::new(64.0, 64.0, 0.0),
+            Vec3::new(0.0, 64.0, 0.0),
+        ];
+        bsp::Face {
+            texture: 0,
+            normal: Vec3::Z,
+            texels: points.iter().map(|p| Vec2::new(p.x, p.y)).collect(),
+            points,
+            lightmap: None,
+        }
+    }
+
+    fn quake_brush(contents: bsp::Contents, mins: Vec3, maxs: Vec3) -> bsp::Brush {
+        let axial = [
+            (Vec3::X, maxs.x),
+            (Vec3::NEG_X, -mins.x),
+            (Vec3::Y, maxs.y),
+            (Vec3::NEG_Y, -mins.y),
+            (Vec3::Z, maxs.z),
+            (Vec3::NEG_Z, -mins.z),
+        ];
+        bsp::Brush {
+            contents,
+            mins,
+            maxs,
+            planes: axial
+                .map(|(normal, dist)| bsp::Plane { normal, dist })
+                .to_vec(),
+        }
+    }
+
+    #[test]
+    fn face_becomes_a_fan_in_engine_space() {
+        let mut data = MeshData::default();
+        append_face(&mut data, &floor_face(), Vec2::splat(64.0), None);
+
+        assert_eq!(data.vertices.len(), 4);
+        assert_eq!(data.indices, [0, 1, 2, 0, 2, 3]);
+        // Quake (64, 64, 0) is engine (2, 0, −2); Quake up is engine +Y.
+        assert_eq!(data.vertices[2].pos, [2.0, 0.0, -2.0]);
+        assert_eq!(data.vertices[0].normal, [0.0, 1.0, 0.0]);
+
+        // Still counter-clockwise around the normal after the swap.
+        let pos = |i: u32| Vec3::from(data.vertices[i as usize].pos);
+        let winding = (pos(1) - pos(0)).cross(pos(2) - pos(0));
+        assert!(winding.dot(Vec3::Y) > 0.0);
+    }
+
+    #[test]
+    fn texels_scale_by_texture_size_and_light_uvs_pass_through() {
+        let mut data = MeshData::default();
+        let light = [Vec2::ZERO, Vec2::X, Vec2::ONE, Vec2::Y].map(|v| v * 0.5);
+        append_face(&mut data, &floor_face(), Vec2::splat(32.0), Some(&light));
+
+        // 64 texels on a 32-texel texture: the texture repeats twice.
+        assert_eq!(data.vertices[2].uv, [2.0, 2.0]);
+        assert_eq!(data.vertices[2].lightmap_uv, [0.5, 0.5]);
+
+        let mut unlit = MeshData::default();
+        append_face(&mut unlit, &floor_face(), Vec2::splat(32.0), None);
+        assert!(unlit.vertices.iter().all(|v| v.lightmap_uv == [0.0, 0.0]));
+    }
+
+    #[test]
+    fn only_solid_brushes_collide_and_they_move_to_engine_space() {
+        let model = bsp::Model {
+            mins: Vec3::ZERO,
+            maxs: Vec3::splat(64.0),
+            faces: Vec::new(),
+            brushes: vec![
+                quake_brush(
+                    bsp::Contents::Solid,
+                    Vec3::ZERO,
+                    Vec3::new(32.0, 32.0, 64.0),
+                ),
+                quake_brush(bsp::Contents::Water, Vec3::ZERO, Vec3::splat(64.0)),
+                quake_brush(bsp::Contents::Clip, Vec3::ZERO, Vec3::splat(32.0)),
+            ],
+        };
+
+        let solid = colliders(&model);
+        assert_eq!(solid.len(), 2, "solid and clip, not water");
+
+        // Quake x 0..32, y 0..32, z 0..64 → engine x 0..1, y 0..2, z −1..0.
+        let bounds = solid[0].bounds();
+        assert!((bounds.min - Vec3::new(0.0, 0.0, -1.0)).length() < EPS);
+        assert!((bounds.max - Vec3::new(1.0, 2.0, 0.0)).length() < EPS);
+    }
 }

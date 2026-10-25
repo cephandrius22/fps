@@ -1,6 +1,6 @@
 [package]
 name = "base"
-description = "Foundation: logging, asserts, asset filesystem, hot-reload watcher."
+description = "Foundation: logging, asserts, images and PNG, generational handles, asset files, hot-reload watcher, input vocabulary."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

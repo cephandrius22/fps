@@ -13,6 +13,18 @@
 //! Only what the engine draws and collides with is read. Visibility and
 //! clip hulls are skipped; of the lightmaps, only style 0 (steady light)
 //! in grayscale, at Quake's 16 texels per luxel.
+//!
+//! Modules (start with the types below, then `geometry.rs`):
+//!
+//! ```text
+//!   lib.rs         Bsp, Model, Face, Lightmap, Brush, Texture, parse()
+//!   reader.rs      lump directory, little-endian records, Cursor
+//!   geometry.rs    faces (polygons, texels, lightmaps) and models
+//!   brushlist.rs   BSPX BRUSHLIST → brushes
+//!   textures.rs    miptex headers → names and sizes
+//!   entities.rs    entity text → key/value Entity
+//!   error.rs       BspError
+//! ```
 
 mod brushlist;
 mod entities;

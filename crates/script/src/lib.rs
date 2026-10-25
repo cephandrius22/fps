@@ -28,6 +28,14 @@
 //! script replaces its classes; instances keep their state and pick up
 //! the new methods, because they look their class up by name on every
 //! access.
+//!
+//! Modules:
+//!
+//! ```text
+//!   lib.rs    Vm, Instance, Hook, ScriptError: the host (start here)
+//!   api.rs    the Lua `world` table: actions → Command, reads → WorldView
+//!   view.rs   WorldView: the snapshot scripts read
+//! ```
 
 mod api;
 mod view;

@@ -1,6 +1,19 @@
 //! Foundation layer: small, dependency-light utilities and vocabulary
 //! types usable by every other crate, like an extension of `std`.
 //! Nothing here knows about windows, GPUs, or game rules.
+//!
+//! Modules:
+//!
+//! ```text
+//!   image.rs   Image (RGBA8), PNG read / write, mip halving
+//!   slots.rs   Slots, SlotId: generational handles (meshes, textures, entities)
+//!   vfs.rs     Vfs: asset paths ("textures/a.png") → files under assets/
+//!   watch.rs   Watcher: changed files, for hot reload
+//!   keys.rs    Key, Button: input vocabulary shared by platform and engine
+//!   error.rs   BoxError, chain(): error plumbing for every crate
+//!   log.rs     logger setup (RUST_LOG)
+//!   lib.rs     verify!: an assert that logs, and panics only in debug builds
+//! ```
 
 pub mod error;
 pub mod image;

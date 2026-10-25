@@ -132,3 +132,108 @@ fn brush(cursor: &mut Cursor) -> Result<Brush> {
         planes,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LUMP_COUNT: u32 = 15;
+    /// Version + 15 × (offset, length).
+    const HEADER: u32 = 4 + LUMP_COUNT * 8;
+
+    /// A BSP29 with every lump empty, followed by a BSPX directory with
+    /// one lump named `name` holding `lump`.
+    fn file_with_bspx(name: &str, lump: &[u8]) -> Vec<u8> {
+        let mut bytes = 29u32.to_le_bytes().to_vec();
+        for _ in 0..LUMP_COUNT {
+            bytes.extend(HEADER.to_le_bytes());
+            bytes.extend(0u32.to_le_bytes());
+        }
+
+        let directory = MAGIC.len() + 4 + LUMP_NAME_BYTES + 8;
+        let offset = bytes.len() + directory;
+        bytes.extend(MAGIC);
+        bytes.extend(1u32.to_le_bytes());
+        let mut padded = [0u8; LUMP_NAME_BYTES];
+        padded[..name.len()].copy_from_slice(name.as_bytes());
+        bytes.extend(padded);
+        bytes.extend((offset as u32).to_le_bytes());
+        bytes.extend((lump.len() as u32).to_le_bytes());
+        bytes.extend(lump);
+        bytes
+    }
+
+    /// One model holding one unit-cube brush cut by one sloped plane.
+    fn one_brush(version: i32) -> Vec<u8> {
+        let mut lump = Vec::new();
+        for v in [version, 0, 1, 1] {
+            lump.extend(v.to_le_bytes());
+        }
+        for f in [0.0f32, 0.0, 0.0, 1.0, 1.0, 1.0] {
+            lump.extend(f.to_le_bytes());
+        }
+        lump.extend((-2i16).to_le_bytes());
+        lump.extend(1u16.to_le_bytes());
+        for f in [0.6f32, 0.8, 0.0, 1.0] {
+            lump.extend(f.to_le_bytes());
+        }
+        lump
+    }
+
+    fn parse(bytes: &[u8]) -> Result<Vec<(usize, Vec<Brush>)>> {
+        read(&Lumps::read(bytes)?)
+    }
+
+    #[test]
+    fn brush_gets_its_bounds_as_axial_planes_then_its_own() {
+        let models = parse(&file_with_bspx(BRUSHLIST, &one_brush(1))).unwrap();
+
+        let [(model, brushes)] = &models[..] else {
+            panic!("{models:?}");
+        };
+        assert_eq!(*model, 0);
+        let brush = &brushes[0];
+        assert_eq!(brush.contents, Contents::Solid);
+        assert_eq!(brush.planes.len(), 7);
+        assert_eq!(
+            brush.planes[0],
+            Plane {
+                normal: Vec3::X,
+                dist: 1.0
+            }
+        );
+        assert_eq!(
+            brush.planes[1],
+            Plane {
+                normal: Vec3::NEG_X,
+                dist: 0.0
+            }
+        );
+        assert_eq!(brush.planes[6].normal, Vec3::new(0.6, 0.8, 0.0));
+    }
+
+    #[test]
+    fn unknown_version_is_an_error() {
+        let err = parse(&file_with_bspx(BRUSHLIST, &one_brush(2))).unwrap_err();
+        assert!(matches!(err, BspError::BrushListVersion(2)), "{err:?}");
+    }
+
+    #[test]
+    fn no_bspx_or_no_brushlist_means_no_brushes() {
+        let mut plain = file_with_bspx(BRUSHLIST, &one_brush(1));
+        plain.truncate(HEADER as usize);
+        assert!(parse(&plain).unwrap().is_empty());
+
+        let other = file_with_bspx("LMSHIFT", &[4]);
+        assert!(parse(&other).unwrap().is_empty());
+    }
+
+    #[test]
+    fn truncated_brush_is_an_error() {
+        let mut lump = one_brush(1);
+        lump.truncate(lump.len() - 4);
+
+        let err = parse(&file_with_bspx(BRUSHLIST, &lump)).unwrap_err();
+        assert!(matches!(err, BspError::Truncated(BRUSHLIST)), "{err:?}");
+    }
+}

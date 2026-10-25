@@ -15,6 +15,24 @@
 //! Knows nothing about files or windowing libraries: shader source
 //! comes from the caller, and any raw window handle works as a target.
 //! Headless mode skips the window and renders only the low-res target.
+//!
+//! Modules (start with `Renderer` below, then the passes):
+//!
+//! ```text
+//!   lib.rs           Renderer, RenderConfig, FrameView, Draw, Fog, Quantize, Mipmaps
+//!   passes/mesh.rs   scene geometry: textures, lightmaps, fog
+//!   passes/post.rs   palette quantization and dither
+//!   passes/blit.rs   letterboxed upscale to the window
+//!   texture.rs       albedo and lightmap textures, mip chains
+//!   mesh.rs          MeshData, Vertex, GPU buffers
+//!   target.rs        low-res targets (scene, output)
+//!   camera.rs        Camera → view-projection
+//!   capture.rs       GPU → Image readback
+//!   gpu.rs           adapter, device, queue
+//!   swapchain.rs     window surface
+//!   shader.rs        error-checked shader and pipeline creation
+//!   test_support.rs  shared GPU-test policy (test builds only)
+//! ```
 
 mod camera;
 mod capture;

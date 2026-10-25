@@ -1,6 +1,6 @@
 [package]
 name = "game"
-description = "Game layer. For now a fly-through sandbox."
+description = "Game layer: a walk-through sandbox level, or any compiled Quake map passed as an argument."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

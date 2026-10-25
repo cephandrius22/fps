@@ -1,6 +1,6 @@
 [package]
 name = "engine"
-description = "Engine core: main loop and the API the game layer uses."
+description = "Engine core: main loop, world and entities, character controller, Quake map loading, and the API games are written against."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

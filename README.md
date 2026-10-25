@@ -111,6 +111,24 @@ crates/
 game/              the game layer: a sandbox level (game/src/level.rs), or any map passed as an argument
 ```
 
+## Crates
+
+Each crate's `lib.rs` (the game's `main.rs`) opens with what it is for
+and a map of its modules; `cargo doc --open` shows the same. A good
+order to read them: `engine` for the API, `game` to see it used, then
+whichever layer below you need.
+
+| Crate | What it is for | Uses (workspace crates) | Start reading at |
+|---|---|---|---|
+| `game` | The playable sandbox: the `Game` impl, player controls, the brush-built level | `engine` | `game/src/main.rs`, then `level.rs` |
+| `engine` | Everything a game talks to: the main loop, world and entities, walker and fly camera, Quake maps, asset loading and hot reload | all below | `lib.rs` (the `Game` trait), `world/mod.rs`, `gfx.rs` |
+| `render` | Draws frames with wgpu: low-res target, textures and lightmaps, fog, palette pass, upscale | `base` | `lib.rs` (`Renderer`), then `passes/` |
+| `physics` | Collision against convex brushes: box traces, sliding, stepping | `base` | `brush.rs`, `world.rs`, `mover.rs` |
+| `script` | Runs Lua entity scripts (via mlua) in a sandbox; scripts read a world snapshot and queue commands | — | `lib.rs` (`Vm`), `api.rs` (the Lua API) |
+| `bsp` | Reads Quake .bsp files into plain data: faces, lightmaps, brushes, entities | — | `lib.rs` (the data types) |
+| `platform` | The window and OS events (wraps winit), and the fixed-timestep clock | `base` | `run.rs` |
+| `base` | Small shared pieces: images, generational handles, asset files, the file watcher, input vocabulary, errors | — | `lib.rs` |
+
 ## Architecture
 
 ```
@@ -323,17 +341,24 @@ engine App::frame
 cargo test
 ```
 
+Unit tests sit at the bottom of the file they test (`#[cfg(test)] mod
+tests`), or in a `tests.rs` beside a module folder (`world/tests.rs`).
+Tests that need whole files or a GPU live in `crates/<crate>/tests/`,
+or, in the engine, in `map/test_map.rs`. Shared fixtures live in
+`render::test_support` (GPU skip policy) and `engine/src/test_util.rs`
+(repo assets, headless renderer, reference images).
+
 | Area | Covered by |
 |---|---|
 | `base` | unit tests: slots, Vfs, watcher, image validation, PNG decode (all color types) and round-trip, mip downsampling (linear-light average, odd sizes), error chains |
 | `platform` | unit tests: clock math (injected time), key/button mapping, cursor grab fallback order |
 | `script` | unit tests: hooks with per-instance state and names, missing hooks skipped, unknown classes rejected, every `world.*` command and `print`, reads by name and by `self` (position, mover state, player, time, nil when missing), open/close targets, bad targets rejected, entity keys surviving the trip through Lua, reload keeping state, error messages naming the file or hook, runaway loops stopped, no io/os/file access |
-| `bsp` | unit tests: header and lump bounds, record sizes, the cursor, entity text (pairs, repeats, model indices, errors with line numbers), contents, missing textures, garbage input, luxel grids (snapping, negative texels), texel precision, Newell winding; `tests/test_map.rs` reads the committed test map: version, textures and sizes, models, entities, counter-clockwise faces, the floor, BRUSHLIST brushes, lightmaps that tile the lighting lump exactly, lightmap coordinates inside their grids |
+| `bsp` | unit tests: header and lump bounds, record sizes, the cursor, entity text (pairs, repeats, model indices, errors with line numbers), contents, missing textures, garbage input, error messages, the BSPX brush list (axial planes from bounds, unknown versions, missing lumps, truncation), luxel grids (snapping, negative texels), texel precision, Newell winding; `tests/test_map.rs` reads the committed test map: version, textures and sizes, models, entities, counter-clockwise faces, the floor, BRUSHLIST brushes, lightmaps that tile the lighting lump exactly, lightmap coordinates inside their grids |
 | `physics` | unit tests: brush construction (planes, bevels, faces, winding), box and ray traces (fractions, normals, start-solid), slide along walls and into corners, step up and down, ground detection, snap down |
 | `render` | unit tests: camera, letterbox, vertex and uniform layouts, fog encoding, mip chain sizes, palette loading, readback padding, GPU-test skip policy |
 | `render` GPU | `tests/headless.rs`: renders offscreen and checks pixels (culling, depth, shader reload, texture mapping, nearest filtering, texture replace/destroy/size limit, mipmaps, fog curves and background, palette quantization, dither pattern, lightmap brightness and lightmap UVs) |
 | shaders | `tests/shaders.rs`: naga validates every shipped `.wgsl` (no GPU needed) |
-| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach; scripts relaying fires, spawn/use/enter/tick hooks, delayed fires, the per-tick fire cap; scripts reading the player, positions, mover state and time, and driving movers by name and `self`), mover open/close overrides, shipped scripts load, brush meshes, map conversion (axes and handedness, planes, yaw, bounds, door travel and trigger fields, player start, malformed keys), multi-brush doors, `World::find`, lightmap atlas packing (no overlaps, luxels in place, power-of-two width), reference-image tolerances, asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload, and for the real test map (start and title, solid floor, button opens door 1, door 2 opens on approach, a walker climbs its stairs, and the view from the start against the reference image `crates/engine/reference/test-map.png`) |
+| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach; scripts relaying fires, spawn/use/enter/tick hooks, delayed fires, the per-tick fire cap; scripts reading the player, positions, mover state and time, and driving movers by name and `self`), mover open/close overrides, shipped scripts load, brush meshes, map conversion (axes and handedness, planes, yaw, bounds, door travel and trigger fields, player start, malformed keys), map geometry (fans in engine space, texture and lightmap UVs, which brushes are solid), map lightmap layout (UVs on each face's own luxels, the black luxel for unlit faces, unlit maps), multi-brush doors, `World::find`, lightmap atlas packing (no overlaps, luxels in place, power-of-two width), reference-image tolerances, asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload, and for the real test map (start and title, solid floor, button opens door 1, door 2 opens on approach, a walker climbs its stairs, and the view from the start against the reference image `crates/engine/reference/test-map.png`) |
 | `game` | cube geometry; level layout (spawn is clear, ramp slopes, stair rises, door seals and hides); the scripted secret button with the real `sandbox.lua` (opens on the third press only; shuts behind a player who walks away, reopens with one press); landing from flight needs room; profile and palette cycling |
 
 The reference-image test compares within GPU-to-GPU tolerances (a

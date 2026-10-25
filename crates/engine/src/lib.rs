@@ -10,6 +10,29 @@
 //!                     └──► platform ─► winit
 //!   (base: foundation utilities, usable by all)
 //! ```
+//!
+//! Modules by role (start here, then read `game/src/main.rs` to see the
+//! API in use):
+//!
+//! ```text
+//!   game API   lib.rs      Game, Config, run()
+//!              gfx.rs      Gfx (loading), Frame (drawing), meshes, textures, Camera
+//!              input.rs    Input: keys and mouse per tick
+//!              sim.rs      Tick: what Game::tick receives
+//!   world      world/      World: entities, triggers, fire queue, scripting
+//!              entity.rs   Entity and its components (Model, Mover, Trigger, …)
+//!              mover.rs    the door state machine
+//!              collision.rs Brush, Plane, Aabb, Trace (wrapping physics)
+//!   player     walk.rs     Walker: the character controller and its profiles
+//!              fly.rs      FlyCamera: noclip flying
+//!              look.rs     mouse and arrow-key look, shared by both
+//!   maps       map/        Quake .bsp → meshes, brushes, lightmaps, entities
+//!              atlas.rs    lightmap atlas packing
+//!   running    app.rs      the main loop
+//!              assets.rs   asset registry and hot reload
+//!              debug.rs    F12 screenshots, ENGINE_CAPTURE_FRAME
+//!              error.rs    EngineError
+//! ```
 
 mod app;
 mod assets;

@@ -23,6 +23,14 @@
 //! Edit assets/shaders/*.wgsl, assets/textures/*.png,
 //! assets/palettes/*.png or assets/scripts/*.lua while running to see
 //! them reload.
+//!
+//! Files:
+//!
+//! ```text
+//!   main.rs    Sandbox: the Game impl, player (walk / fly, profiles), view toggles
+//!   level.rs   the sandbox level: brushes, door, buttons, triggers, secret panel
+//!   shapes.rs  procedural cube mesh
+//! ```
 
 mod level;
 mod shapes;
