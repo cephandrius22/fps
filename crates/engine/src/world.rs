@@ -134,7 +134,8 @@ impl World {
     }
 
     /// True when nothing solid overlaps `bounds`, e.g. before placing a
-    /// player there.
+    /// player there. Touching a surface counts as overlapping, so leave a
+    /// small gap (the walker spawns 1 cm above its feet position).
     pub fn is_clear(&self, bounds: Aabb) -> bool {
         let b = bounds.to_physics();
         !self
@@ -258,6 +259,8 @@ impl World {
         fired
     }
 
+    /// The entity owning `body`. A linear scan: fine for a sandbox's
+    /// handful of entities; a body → entity map is the fix if levels grow.
     fn entity_of(&self, body: BodyId) -> Option<EntityId> {
         self.entities
             .iter()

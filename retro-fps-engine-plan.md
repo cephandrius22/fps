@@ -8,6 +8,8 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 
 **Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phases 0 and 0.5 are done** and CI is green on all three OSes. **Phase 1** has everything except what needs a map (which needs ericw-tools). **Phase 2 is in progress**: brush collision, the Arena and Survival walker, entities, and doors, buttons and triggers work in a brush-built sandbox level. Lua and spawning from map entities remain. See [README.md](README.md) for how the code is organized and how to build it.
 
+**Next, each blocked on a decision:** Lua scripting (approve the `mlua` crate), a real map with the BSP loader and lightmaps (install ericw-tools or approve its download), or saves (pick a serialization approach, e.g. approve serde). Unblocked smaller work: crouching, moving platforms that carry the player, and debug drawing of collision hulls.
+
 ### Roadmap
 
 | Phase | Goal | Status |
@@ -39,7 +41,7 @@ Section 11 has the detail for each phase.
 | Character controller | `Walker`: Quake friction / acceleration / capped air control, jumping, 45 cm steps, slopes up to ~45°. Profiles `WalkSettings::arena()` (fast, air control) and `survival()` (slow, sprint with stamina, head bob); all fields public for custom ones. | `crates/engine/src/walk.rs` |
 | Entities | Flat `Entity` with optional model, collider, mover, trigger, usable; generational `EntityId`. Named targets: triggers and buttons fire a name, movers with that name open or close. Doors close after a wait or on fire, and back off instead of crushing. Brushes double as meshes (`Brush::mesh`, world-projected UVs). | `crates/engine/src/world.rs`, `entity.rs`, `collision.rs` |
 | Resources | Asset filesystem (`assets/` discovery), PNG decoding (all color types) to `base::Image`, meshes and textures addressed by generational handles | `crates/base`, `crates/render`, `crates/engine/src/gfx.rs` |
-| Hot reload | File watcher plus an asset registry. Shaders and textures reload; a bad file is rejected and the old version stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
+| Hot reload | File watcher plus an asset registry. Shaders, textures and the palette reload; a bad file is rejected and the old version stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
 | Debugging | Logging (`RUST_LOG`), `verify!` asserts, F12 screenshot, `ENGINE_CAPTURE_FRAME=N` capture-and-exit | `crates/base`, `crates/engine/src/debug.rs` |
 | Errors | Typed `thiserror` errors per area; `EngineError` categories for games; `base::chain` for logs | `crates/*/src/error.rs` and per module |
 | Tests | 209 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
@@ -223,9 +225,9 @@ The fog result also feeds the retro post-pass: quantizing fog to the palette wit
 The engine provides generic systems. The game layer decides what kind of game it is.
 
 ### Entity system
-- Simple, cache-friendly design: entities are IDs with component arrays (light ECS) or a flat struct with optional components. Avoid over-engineering.
-- Components: transform, mesh, collider, character controller, light, audio emitter, trigger, script.
-- Entities are spawned from map data. Entity types are defined in script and data.
+- Simple, cache-friendly design: entities are IDs with component arrays (light ECS) or a flat struct with optional components. Avoid over-engineering. **Decided: flat struct** (`engine::Entity`), in generational slots.
+- Components: transform, mesh, collider, character controller, light, audio emitter, trigger, script. **Built:** transform (position, rotation), model, collider, mover, trigger, usable. The character controller is the separate `Walker`, owned by the game.
+- Entities are spawned from map data. Entity types are defined in script and data. **Today:** spawned in code (`game/src/level.rs`); they talk through named targets (`World::fire`).
 
 ### Character controller (swappable profiles)
 | Profile | Feel |
@@ -234,7 +236,7 @@ The engine provides generic systems. The game layer decides what kind of game it
 | **Survival** | Slower, weighty, head bob, stamina, no air control. |
 | **Custom** | Parameters exposed to script. |
 
-Underneath all of them is the same collision code: box or capsule traces against brushes and meshes, with slide and step-up.
+Underneath all of them is the same collision code: box or capsule traces against brushes and meshes, with slide and step-up. **Built:** Arena and Survival as `WalkSettings::arena()` / `survival()`; Custom is any `WalkSettings` value (public fields), with script access to come. Box traces against brushes only; capsules and meshes later.
 
 ### Gameplay systems (game layer, mostly script)
 - Inventory with limited slots, item combining, and key items.
@@ -268,11 +270,11 @@ Each phase ends with something runnable.
 
 ### Phase 0 — Foundations (1–2 weeks) — ✅ done
 - ✅ Project layout, build system (Cargo workspace).
-- ⚠️ CI on all three OSes: written, never run. Needs a GitHub remote.
+- ✅ CI on all three OSes (first run in Phase 0.5, once the GitHub remote existed).
 - ✅ Window, input, fixed-timestep loop (winit instead of SDL3).
 - ✅ GPU device setup, clear screen, render geometry.
 - ✅ Logging, asserts, file and resource loading.
-- 🟡 Hot-reload watcher: watches all assets, but only shaders reload. Other asset types join through the asset registry as they arrive.
+- ✅ Hot-reload watcher: watches all assets. Shaders, textures and palettes reload through the asset registry; scripts and maps will join it.
 - ✅ **Milestone:** a spinning colored cube at low resolution with nearest-neighbor upscale. Verified with a captured frame on Apple M1 (Metal).
 - Beyond scope, also done: screenshot capture, a headless renderer with pixel-checking GPU tests, generational mesh handles, enforced layer boundaries, README.
 

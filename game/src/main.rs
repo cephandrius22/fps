@@ -24,8 +24,8 @@ mod shapes;
 
 use engine::math::{Mat4, Quat, Vec3};
 use engine::{
-    BoxError, Button, Camera, Config, CursorMode, Falloff, FlyCamera, Fog, Frame, Game, Gfx, Key,
-    MeshHandle, MouseLook, Quantize, Tick, WalkSettings, Walker, World,
+    Aabb, BoxError, Button, Camera, Config, CursorMode, Falloff, FlyCamera, Fog, Frame, Game, Gfx,
+    Key, MeshHandle, MouseLook, Quantize, Tick, WalkSettings, Walker, World,
 };
 use shapes::Tint;
 
@@ -102,74 +102,26 @@ impl Movement {
     }
 }
 
-/// Resources created in `init`.
-struct Scene {
-    world: World,
-    cube: MeshHandle,
-}
-
-struct Sandbox {
-    scene: Option<Scene>,
+/// The player: how they move, and the profile walking uses.
+struct Player {
     movement: Movement,
     profile: Profile,
-    fog: Option<Fog>,
-    quantize: Quantize,
-    /// Spin angle at the previous and current tick, for interpolation.
-    prev_angle: f32,
-    angle: f32,
 }
 
-impl Sandbox {
+impl Player {
     fn new() -> Self {
         let profile = Profile::Survival;
+        let walker = Walker::new(level::SPAWN, 0.0, 0.0, profile.settings());
 
         Self {
-            scene: None,
-            movement: Movement::Walk(Walker::new(level::SPAWN, 0.0, 0.0, profile.settings())),
+            movement: Movement::Walk(walker),
             profile,
-            fog: Some(MIST),
-            quantize: Quantize::Dithered,
-            prev_angle: 0.0,
-            angle: 0.0,
-        }
-    }
-
-    /// Click captures the mouse; Esc frees it, or quits if already free.
-    fn handle_cursor(tick: &mut Tick) {
-        let captured = tick.cursor() == CursorMode::Captured;
-
-        if !captured && tick.input.button_pressed(CAPTURE_BUTTON) {
-            tick.set_cursor(CursorMode::Captured);
-        }
-
-        if !tick.input.was_pressed(RELEASE_KEY) {
-            return;
-        }
-        if captured {
-            tick.set_cursor(CursorMode::Free);
-        } else {
-            tick.quit();
-        }
-    }
-
-    /// F1: fog on/off. F2: palette off → nearest → dithered → off.
-    /// Both act once per press, on the tick it lands.
-    fn handle_look_keys(&mut self, tick: &Tick) {
-        if tick.input.was_pressed(FOG_KEY) {
-            self.fog = match self.fog {
-                Some(_) => None,
-                None => Some(MIST),
-            };
-        }
-
-        if tick.input.was_pressed(QUANTIZE_KEY) {
-            self.quantize = next_quantize(self.quantize);
         }
     }
 
     /// F3: walk ↔ fly. F4: survival ↔ arena (applies when walking, and
     /// to the next walk after flying).
-    fn handle_movement_keys(&mut self, tick: &Tick, world: &World) {
+    fn handle_keys(&mut self, tick: &Tick, world: &World) {
         if tick.input.was_pressed(PROFILE_KEY) {
             self.profile = self.profile.other();
             if let Movement::Walk(walker) = &mut self.movement {
@@ -190,6 +142,26 @@ impl Sandbox {
             },
         };
     }
+
+    /// Moves one tick. Returns the body to test triggers against: None
+    /// while flying.
+    fn update(&mut self, tick: &Tick, world: &World) -> Option<Aabb> {
+        let mouse = match tick.cursor() {
+            CursorMode::Captured => MouseLook::Enabled,
+            CursorMode::Free => MouseLook::Disabled,
+        };
+
+        match &mut self.movement {
+            Movement::Walk(walker) => {
+                walker.update(tick.input, mouse, world, tick.dt);
+                Some(walker.bounds())
+            }
+            Movement::Fly(fly) => {
+                fly.update(tick.input, mouse, tick.dt);
+                None
+            }
+        }
+    }
 }
 
 /// A walker whose eyes are where the flying camera is, if its body fits
@@ -201,11 +173,104 @@ fn land(fly: &FlyCamera, settings: WalkSettings, world: &World) -> Option<Walker
     world.is_clear(walker.bounds()).then_some(walker)
 }
 
+/// Look settings the player toggles: fog and palette.
+struct View {
+    fog: Option<Fog>,
+    quantize: Quantize,
+}
+
+impl View {
+    fn new() -> Self {
+        Self {
+            fog: Some(MIST),
+            quantize: Quantize::Dithered,
+        }
+    }
+
+    /// F1: fog on/off. F2: palette off → nearest → dithered → off.
+    /// Both act once per press, on the tick it lands.
+    fn handle_keys(&mut self, tick: &Tick) {
+        if tick.input.was_pressed(FOG_KEY) {
+            self.fog = match self.fog {
+                Some(_) => None,
+                None => Some(MIST),
+            };
+        }
+
+        if tick.input.was_pressed(QUANTIZE_KEY) {
+            self.quantize = next_quantize(self.quantize);
+        }
+    }
+}
+
 fn next_quantize(quantize: Quantize) -> Quantize {
     match quantize {
         Quantize::Off => Quantize::Nearest,
         Quantize::Nearest => Quantize::Dithered,
         Quantize::Dithered => Quantize::Off,
+    }
+}
+
+/// The decorative spinning cube's angle at the previous and current
+/// tick, for interpolation.
+#[derive(Default)]
+struct Spin {
+    prev: f32,
+    angle: f32,
+}
+
+impl Spin {
+    fn advance(&mut self, dt: f32) {
+        self.prev = self.angle;
+        self.angle += SPIN_SPEED * dt;
+    }
+
+    fn transform(&self, alpha: f32) -> Mat4 {
+        let angle = self.prev + (self.angle - self.prev) * alpha;
+        let rotation = Quat::from_axis_angle(SPIN_AXIS.normalize(), angle);
+        Mat4::from_rotation_translation(rotation, SPIN_AT)
+    }
+}
+
+/// Resources created in `init`.
+struct Scene {
+    world: World,
+    cube: MeshHandle,
+}
+
+struct Sandbox {
+    scene: Option<Scene>,
+    player: Player,
+    view: View,
+    spin: Spin,
+}
+
+impl Sandbox {
+    fn new() -> Self {
+        Self {
+            scene: None,
+            player: Player::new(),
+            view: View::new(),
+            spin: Spin::default(),
+        }
+    }
+
+    /// Click captures the mouse; Esc frees it, or quits if already free.
+    fn handle_cursor(tick: &mut Tick) {
+        let captured = tick.cursor() == CursorMode::Captured;
+
+        if !captured && tick.input.button_pressed(CAPTURE_BUTTON) {
+            tick.set_cursor(CursorMode::Captured);
+        }
+
+        if !tick.input.was_pressed(RELEASE_KEY) {
+            return;
+        }
+        if captured {
+            tick.set_cursor(CursorMode::Free);
+        } else {
+            tick.quit();
+        }
     }
 }
 
@@ -225,39 +290,24 @@ impl Game for Sandbox {
     }
 
     fn tick(&mut self, tick: &mut Tick) {
-        let Some(mut scene) = self.scene.take() else {
+        let Some(scene) = &mut self.scene else {
             return;
         };
 
         Self::handle_cursor(tick);
-        self.handle_look_keys(tick);
-        self.handle_movement_keys(tick, &scene.world);
+        self.view.handle_keys(tick);
+        self.player.handle_keys(tick, &scene.world);
 
-        let mouse = match tick.cursor() {
-            CursorMode::Captured => MouseLook::Enabled,
-            CursorMode::Free => MouseLook::Disabled,
-        };
-        let player = match &mut self.movement {
-            Movement::Walk(walker) => {
-                walker.update(tick.input, mouse, &scene.world, tick.dt);
-                Some(walker.bounds())
-            }
-            Movement::Fly(fly) => {
-                fly.update(tick.input, mouse, tick.dt);
-                None
-            }
-        };
+        // Player first, then the world reacts to where they ended up.
+        let body = self.player.update(tick, &scene.world);
+        scene.world.tick(tick.dt, body);
 
-        scene.world.tick(tick.dt, player);
         if tick.input.was_pressed(USE_KEY) {
-            scene
-                .world
-                .use_from(self.movement.eye(), self.movement.forward());
+            let movement = &self.player.movement;
+            scene.world.use_from(movement.eye(), movement.forward());
         }
 
-        self.prev_angle = self.angle;
-        self.angle += SPIN_SPEED * tick.dt;
-        self.scene = Some(scene);
+        self.spin.advance(tick.dt);
     }
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -265,14 +315,12 @@ impl Game for Sandbox {
             return;
         };
 
-        frame.camera = self.movement.camera(frame.alpha);
-        frame.fog = self.fog;
-        frame.quantize = self.quantize;
-        scene.world.draw(frame, frame.alpha);
+        frame.camera = self.player.movement.camera(frame.alpha);
+        frame.fog = self.view.fog;
+        frame.quantize = self.view.quantize;
 
-        let angle = self.prev_angle + (self.angle - self.prev_angle) * frame.alpha;
-        let spin = Quat::from_axis_angle(SPIN_AXIS.normalize(), angle);
-        frame.draw_mesh(scene.cube, Mat4::from_rotation_translation(spin, SPIN_AT));
+        scene.world.draw(frame, frame.alpha);
+        frame.draw_mesh(scene.cube, self.spin.transform(frame.alpha));
     }
 }
 

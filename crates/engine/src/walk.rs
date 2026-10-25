@@ -222,45 +222,76 @@ impl Walker {
             .look
             .turn(input, mouse, &self.settings.look, dt);
 
-        let s = self.settings;
         let physics = world.physics();
+        let half = self.settings.half_size;
         let start = self.current.center;
-        let ground = mover::ground(physics, start, s.half_size);
+        let ground = mover::ground(physics, start, half);
 
-        let (wish_dir, wish_speed) = self.wish(input, ground.is_some(), dt);
-        let mut velocity = self.velocity;
-
+        let direction = self.wish_direction(input);
+        let speed = self.spend_sprint(input, direction, ground.is_some(), dt);
         let jumped = ground.is_some() && input.was_pressed(JUMP_KEY);
-        let moved = match ground {
-            Some(floor) if !jumped => {
-                velocity = friction(velocity, s.friction, s.stop_speed, dt);
-                velocity = accelerate(velocity, wish_dir, wish_speed, s.accel, dt);
-                velocity = along_plane(velocity, floor.normal);
-                mover::step_slide(physics, start, velocity, s.half_size, dt, s.step_height)
-            }
-            _ => {
-                if jumped {
-                    velocity.y = s.jump_speed;
-                }
-                velocity = air_accelerate(velocity, wish_dir, wish_speed, &s, dt);
-                velocity.y -= s.gravity * dt;
-                mover::slide(physics, start, velocity, s.half_size, dt)
-            }
-        };
-
-        let mut center = moved.position;
-        // Walking off a step or down a slope: stay on the ground rather
-        // than launch off every edge.
-        let was_walking = ground.is_some() && !jumped;
-        if was_walking && mover::ground(physics, center, s.half_size).is_none() {
-            center =
-                mover::snap_down(physics, center, s.half_size, s.step_height).unwrap_or(center);
+        if jumped {
+            self.velocity.y = self.settings.jump_speed;
         }
 
-        self.on_ground = mover::ground(physics, center, s.half_size).is_some();
+        let moved = match ground {
+            Some(floor) if !jumped => self.walk(physics, floor.normal, direction, speed, dt),
+            _ => self.airborne(physics, direction, speed, dt),
+        };
         self.velocity = moved.velocity;
+
+        // Walking off a step or down a slope: stay on the ground rather
+        // than launch off every edge.
+        let mut center = moved.position;
+        let was_walking = ground.is_some() && !jumped;
+        if was_walking && mover::ground(physics, center, half).is_none() {
+            let snapped = mover::snap_down(physics, center, half, self.settings.step_height);
+            center = snapped.unwrap_or(center);
+        }
+
+        self.on_ground = mover::ground(physics, center, half).is_some();
         self.current.center = center;
-        self.current.bob = self.bob(start, center);
+        self.current.bob = self.advance_bob(start, center);
+    }
+
+    /// One tick on the ground: friction, acceleration, then a move along
+    /// the floor that climbs steps.
+    fn walk(
+        &self,
+        physics: &physics::World,
+        floor: Vec3,
+        direction: Vec3,
+        speed: f32,
+        dt: f32,
+    ) -> mover::Move {
+        let s = &self.settings;
+        let mut velocity = friction(self.velocity, s.friction, s.stop_speed, dt);
+        velocity = accelerate(velocity, direction, speed, s.accel, dt);
+        velocity = along_plane(velocity, floor);
+
+        mover::step_slide(
+            physics,
+            self.current.center,
+            velocity,
+            s.half_size,
+            dt,
+            s.step_height,
+        )
+    }
+
+    /// One tick in the air: capped air control and gravity.
+    fn airborne(
+        &self,
+        physics: &physics::World,
+        direction: Vec3,
+        speed: f32,
+        dt: f32,
+    ) -> mover::Move {
+        let s = &self.settings;
+        let mut velocity = air_accelerate(self.velocity, direction, speed, s, dt);
+        velocity.y -= s.gravity * dt;
+
+        mover::slide(physics, self.current.center, velocity, s.half_size, dt)
     }
 
     /// Feet position (latest tick, not interpolated).
@@ -323,27 +354,31 @@ impl Walker {
         )
     }
 
-    /// Wish direction (level, unit or zero) and speed from the movement
-    /// keys. Spends or refills stamina.
-    fn wish(&mut self, input: &Input, grounded: bool, dt: f32) -> (Vec3, f32) {
+    /// Level unit direction the movement keys ask for; zero for none.
+    fn wish_direction(&self, input: &Input) -> Vec3 {
         let (forward, right) = self.current.look.ground_axes();
         let wish = forward * input.axis(Key::W, Key::S) + right * input.axis(Key::D, Key::A);
-        let direction = wish.normalize_or_zero();
 
-        let mut speed = self.settings.speed;
+        wish.normalize_or_zero()
+    }
+
+    /// Wished speed this tick. Sprinting (Shift, moving, on the ground,
+    /// not winded) multiplies it and spends stamina; anything else
+    /// refills stamina.
+    fn spend_sprint(&mut self, input: &Input, direction: Vec3, grounded: bool, dt: f32) -> f32 {
+        let speed = self.settings.speed;
         let Some(sprint) = self.settings.sprint else {
-            return (direction, speed);
+            return speed;
         };
 
         let moving = direction != Vec3::ZERO;
         let sprinting = moving && grounded && input.is_down(SPRINT_KEY) && !self.winded;
-        if sprinting {
-            speed *= sprint.multiplier;
-            self.stamina -= dt / sprint.duration;
+        let change = if sprinting {
+            -dt / sprint.duration
         } else {
-            self.stamina += dt / sprint.recovery;
-        }
-        self.stamina = self.stamina.clamp(0.0, 1.0);
+            dt / sprint.recovery
+        };
+        self.stamina = (self.stamina + change).clamp(0.0, 1.0);
 
         if self.stamina == 0.0 {
             self.winded = true;
@@ -352,11 +387,15 @@ impl Walker {
             self.winded = false;
         }
 
-        (direction, speed)
+        if sprinting {
+            return speed * sprint.multiplier;
+        }
+        speed
     }
 
-    /// Head bob offset after moving from `from` to `to`.
-    fn bob(&mut self, from: Vec3, to: Vec3) -> f32 {
+    /// Adds the ground covered from `from` to `to` to the bob cycle and
+    /// returns this tick's camera offset (0 without bob or off the ground).
+    fn advance_bob(&mut self, from: Vec3, to: Vec3) -> f32 {
         let Some(bob) = self.settings.bob else {
             return 0.0;
         };
