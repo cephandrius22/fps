@@ -15,7 +15,7 @@
 
 use glam::Vec3;
 
-use crate::error::{BspError, Result};
+use crate::error::{BspError, Result, index_error};
 use crate::reader::{Cursor, Lumps, name};
 use crate::{Brush, Contents, Plane};
 
@@ -45,8 +45,10 @@ pub(crate) fn read(lumps: &Lumps) -> Result<Vec<(usize, Vec<Brush>)>> {
         let count = cursor.i32()?;
         let _planes = cursor.i32()?;
 
-        let model = usize::try_from(model).map_err(|_| index("brush model", model))?;
-        let count = usize::try_from(count).map_err(|_| index("brush count", count))?;
+        let model =
+            usize::try_from(model).map_err(|_| index_error("brush model", i64::from(model)))?;
+        let count =
+            usize::try_from(count).map_err(|_| index_error("brush count", i64::from(count)))?;
         let brushes = (0..count)
             .map(|_| brush(&mut cursor))
             .collect::<Result<_>>()?;
@@ -129,11 +131,4 @@ fn brush(cursor: &mut Cursor) -> Result<Brush> {
         maxs,
         planes,
     })
-}
-
-fn index(what: &'static str, index: i32) -> BspError {
-    BspError::Index {
-        what,
-        index: i64::from(index),
-    }
 }

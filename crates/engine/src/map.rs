@@ -110,7 +110,14 @@ pub(crate) fn load(gfx: &mut Gfx, world: &mut World, path: &str) -> Result<MapIn
             _ => {}
         }
 
-        let Some(model) = entity.model().and_then(|i| map.models.get(i)) else {
+        let Some(index) = entity.model() else {
+            continue;
+        };
+        let Some(model) = map.models.get(index) else {
+            log::warn!(
+                "{path}: {} names missing model *{index}",
+                entity.classname()
+            );
             continue;
         };
         let models = meshes(gfx, model, &surfaces);
@@ -129,6 +136,7 @@ pub(crate) fn load(gfx: &mut Gfx, world: &mut World, path: &str) -> Result<MapIn
 
 /// What one map entity turns into.
 enum Spawn {
+    /// Boxed: an `Entity` is much bigger than a `Brush`.
     Entity(Box<Entity>),
     /// World geometry: solid, no entity.
     Static(Brush),

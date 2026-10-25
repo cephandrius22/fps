@@ -45,3 +45,8 @@ pub enum BspError {
 }
 
 pub(crate) type Result<T, E = BspError> = std::result::Result<T, E>;
+
+/// A record pointing at something that does not exist.
+pub(crate) fn index_error(what: &'static str, index: i64) -> BspError {
+    BspError::Index { what, index }
+}
