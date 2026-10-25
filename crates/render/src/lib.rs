@@ -3,7 +3,7 @@
 //! nearest-neighbor sampling.
 //!
 //! ```text
-//!   draws ─► MeshPass (lit, fogged) ─► low-res scene color+depth (640×360)
+//!   draws ─► MeshPass (lightmap or sun, fogged) ─► low-res scene color+depth
 //!                                             │
 //!                                             ▼
 //!                   PostPass (palette, dither) ─► low-res output ─► capture

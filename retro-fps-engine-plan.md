@@ -6,9 +6,9 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 
 ## Status (2026-10-25)
 
-**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phases 0 and 0.5 are done** and CI is green on all three OSes. **Phase 1** loads Quake maps compiled with ericw-tools (geometry, BSPX brushes, entities); lightmaps and the reference-image test remain. **Phase 2 is in progress**: brush collision, the Arena and Survival walker, entities (spawned in code or from maps), doors, buttons and triggers, and Lua-scripted entity behavior work in both the sandbox level and the test map. Scripts cannot yet read world state. See [README.md](README.md) for how the code is organized and how to build it.
+**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phases 0 and 0.5 are done** and CI is green on all three OSes. **Phase 1 is done**: Quake maps compiled with ericw-tools load with geometry, BSPX brushes, entities and baked lightmaps, checked by a reference-image test. **Phase 2 is in progress**: brush collision, the Arena and Survival walker, entities (spawned in code or from maps), doors, buttons and triggers, and Lua-scripted entity behavior work in both the sandbox level and the test map. Scripts cannot yet read world state. See [README.md](README.md) for how the code is organized and how to build it.
 
-**Next.** Recommended: lightmaps (L1) from the BSP's lighting lump, which `tools/compile-map.sh` already bakes with `light`, then the reference-image test of the test map; that completes Phase 1. ericw-tools 2.0.0-alpha11 (`qbsp`, `vis`, `light`) is built on the development machine, outside the repo; CI has no ericw-tools, so compiled maps are committed. Also unblocked: script read access to world state (entity positions, the player, mover state) and direct mover control, so AI and puzzles can live in Lua; crouching; moving platforms that carry the player; debug drawing of collision hulls. Blocked on a decision: saves (pick a serialization approach, e.g. approve serde).
+**Next.** Recommended: finish Phase 2 by giving scripts read access to world state (entity positions, the player, mover state) and direct mover control, so AI and puzzles can live in Lua. ericw-tools 2.0.0-alpha11 (`qbsp`, `vis`, `light`) is built on the development machine, outside the repo; CI has no ericw-tools, so compiled maps are committed. Also unblocked: colored lightmaps (`light -bspxlit`, BSPX RGBLIGHTING); crouching; moving platforms that carry the player; debug drawing of collision hulls. Blocked on a decision: saves (pick a serialization approach, e.g. approve serde).
 
 ### Roadmap
 
@@ -31,8 +31,8 @@ Section 11 has the detail for each phase.
 |---|---|---|
 | Build | Cargo workspace, one crate per layer, dependency versions set once in the root manifest | `Cargo.toml`, `crates/` |
 | Platform | winit window, cursor capture (locked, falling back to confined), OS events translated to engine `Key`/`Button`, fixed-timestep clock (60 Hz, stall cap) | `crates/platform` |
-| Renderer | wgpu device and swapchain, 640×360 low-res targets with depth, nearest-neighbor letterboxed upscale (fit or integer), mesh pass with back-face culling, textures (sRGB, nearest, repeat, mipmaps off / nearest / linear, white fallback, in-place replace), frame readback | `crates/render` |
-| Lighting | L0: texture × vertex color × a fixed sun term. The vertex format already has a lightmap UV slot. | `assets/shaders/mesh.wgsl` |
+| Renderer | wgpu device and swapchain, 640×360 low-res targets with depth, nearest-neighbor letterboxed upscale (fit or integer), mesh pass with back-face culling, textures (sRGB, nearest, repeat, mipmaps off / nearest / linear, white fallback, in-place replace), lightmap textures (bilinear, clamped, no mips), frame readback | `crates/render` |
+| Lighting | L1: baked lightmaps from ericw-tools' `light`, Quake's 2× overbright, one atlas per map; faces no light reached draw black. L0 (a fixed sun term) for draws without a lightmap, such as the sandbox. | `assets/shaders/mesh.wgsl`, `crates/engine/src/atlas.rs`, `crates/engine/src/map/lighting.rs` |
 | Fog | F0: distance fog per frame (linear, exp, exp²), radial distance, background drawn in the fog color | `assets/shaders/mesh.wgsl`, `engine::Fog` |
 | Retro post-pass | Low-res pass after lighting: nearest-color palette quantization (up to 256 colors from a PNG, hot-reloadable) with optional 4×4 Bayer dither; byte-exact palette output | `assets/shaders/post.wgsl`, `crates/render/src/passes/post.rs`, `assets/palettes/` |
 | Engine core | Main loop, per-tick input state, cursor mode requests, `Game` trait (`init` / `tick` / `draw` with interpolation), engine-owned public types | `crates/engine` |
@@ -42,15 +42,15 @@ Section 11 has the detail for each phase.
 | Scripting | Lua 5.4 via `mlua` (vendored), wrapped in `crates/script` (VM host in `lib.rs`, the Lua-facing API in `api.rs`). Entity classes are global tables in `assets/scripts/*.lua`, loaded at startup and hot-reloaded (instances keep state). Hooks `on_spawn` / `on_fire` / `on_use` / `on_enter` / `on_tick`; API `world.fire`, `world.fire_after`, `world.log`, `print`. Sandboxed (no io/os/files), with a per-call instruction budget. | `crates/script`, `crates/engine/src/world.rs`, `assets/scripts/` |
 | Entities | Flat `Entity` with optional model, collider, mover, trigger, usable, script; generational `EntityId`. The engine owns the `World`. Mover state machine in its own module. Named targets: triggers, buttons and scripts fire a name (queued, at most 64 per tick, with optional delay); movers with that name open or close, scripts get `on_fire`. Doors close after a wait or on fire, and back off instead of crushing. Brushes double as meshes (`Brush::mesh`, world-projected UVs). | `crates/engine/src/world.rs`, `entity.rs`, `mover.rs`, `collision.rs` |
 | Resources | Asset filesystem (`assets/` discovery), PNG decoding (all color types) to `base::Image`, meshes and textures addressed by generational handles | `crates/base`, `crates/render`, `crates/engine/src/gfx.rs` |
-| Maps | Quake BSP29/BSP2 reader with the BSPX brush list (`crates/bsp`, no engine types; one module per part of the file: lump directory, faces and models, textures, brush list, entity text), converted to meters and Y-up (32 units/m) in `engine/src/map.rs`: per-texture meshes, solid brushes, `func_door` (with Quake's trigger field when untargeted), `func_button`, `trigger_once`/`_multiple`, `func_illusionary`, other brush entities, `info_player_start`, "script" keys. Textures by name from `assets/textures/`. Test map source in `maps/`, compiled with `tools/compile-map.sh` (qbsp `-wrbrushes -notex`, vis, light). | `crates/bsp`, `crates/engine/src/map.rs`, `maps/`, `tools/`, `assets/maps/` |
+| Maps | Quake BSP29/BSP2 reader with the BSPX brush list (`crates/bsp`, no engine types; one module per part of the file: lump directory, faces and models, textures, brush list, entity text), converted to meters and Y-up (32 units/m) in `engine/src/map/` (one file each for space, entities, geometry, lighting): per-texture meshes, solid brushes, `func_door` (with Quake's trigger field when untargeted), `func_button`, `trigger_once`/`_multiple`, `func_illusionary`, other brush entities, `info_player_start`, "script" keys; style-0 lightmaps sized exactly as `light` sizes them. Textures by name from `assets/textures/`. Test map source in `maps/`, compiled with `tools/compile-map.sh` (qbsp `-wrbrushes -notex`, vis, light). | `crates/bsp`, `crates/engine/src/map/`, `maps/`, `tools/`, `assets/maps/` |
 | Hot reload | File watcher plus an asset registry. Shaders, textures, the palette and scripts reload; a bad file is rejected and the old version stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
 | Debugging | Logging (`RUST_LOG`), `verify!` asserts, F12 screenshot, `ENGINE_CAPTURE_FRAME=N` capture-and-exit | `crates/base`, `crates/engine/src/debug.rs` |
 | Errors | Typed `thiserror` errors per area; `EngineError` categories for games; `base::chain` for logs | `crates/*/src/error.rs` and per module |
-| Tests | 273 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
+| Tests | 289 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
 | CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows with the pinned toolchain. GPU tests run on all three (Linux via Mesa lavapipe); a skip would show as a run warning. | `.github/workflows/ci.yml` |
 | Build config | Toolchain pinned to 1.99.1, lints in `[workspace.lints]`, `publish = false`, dependency debug info reduced to line tables | `rust-toolchain.toml`, `Cargo.toml` |
 
-Not implemented yet, though the plan's sections describe them: lightmaps, map hot reload, height and volumetric fog, script access to world state, crouching, moving platforms that carry the player, serialization (saves), audio.
+Not implemented yet, though the plan's sections describe them: colored and switchable lightmaps, map hot reload, height and volumetric fog, script access to world state, crouching, moving platforms that carry the player, serialization (saves), audio.
 
 ---
 
@@ -188,7 +188,7 @@ Lighting is built in tiers. Each tier is additive, and nothing is thrown away.
 | Tier | Feature | Notes |
 |---|---|---|
 | L0 | Fullbright + flat shading | For debugging early phases. |
-| L1 | **Baked lightmaps** | Classic look. Our own baker (simple direct light plus a few bounces) or ericw-tools early on. |
+| L1 | **Baked lightmaps** | Classic look. Our own baker (simple direct light plus a few bounces) or ericw-tools early on. ✅ Done with ericw-tools (Phase 1). |
 | L2 | **Dynamic point and spot lights**, forward shading | Muzzle flashes, flickering lamps, a few lights per object. |
 | L3 | **Shadow maps for dynamic lights** | Essential for horror: a flashlight that casts real shadows. Spot-light shadow maps first, then point-light cubemaps. |
 | L4 | **Light probes / irradiance volumes** | Lets dynamic objects (enemies, props) receive baked lighting, so they match the lightmapped world. |
@@ -292,7 +292,7 @@ Found in review. Each is cheaper now than once Phase 1 builds on top of it.
 - Skipped for now (optional): prefix crate names (e.g. `retro-render`) and switch `passes/mod.rs` to `passes.rs`.
 - ✅ **Milestone:** CI green on all three OSes.
 
-### Phase 1 — First world (2–4 weeks) — in progress
+### Phase 1 — First world (2–4 weeks) — ✅ done
 - ✅ Fly camera: `engine::FlyCamera`, with mouse look through cursor capture (click to capture, Esc to release) and arrow-key look as a fallback.
 - ✅ Textured meshes, nearest-neighbor sampling, texture hot reload through the asset registry. PNG only.
 - ✅ Mipmaps as a config toggle (`Video::mipmaps`: off, nearest, linear). Default nearest, as Quake's software renderer did. Chains are built on the CPU at upload, averaged in linear light.
@@ -301,7 +301,7 @@ Found in review. Each is cheaper now than once Phase 1 builds on top of it.
 - ✅ Load a map: ericw-tools BSP loader as the shortcut. `crates/bsp` reads BSP29/BSP2 plus the BSPX BRUSHLIST (qbsp `-wrbrushes`), so the engine collides with the map's real brushes instead of Quake's three fixed hulls. `engine::Gfx::load_map` spawns the same `Brush`es and `Entity`s the sandbox uses, so collision, the walker, doors and scripts work on maps unchanged. Test map `maps/test.map` (three rooms, two doors, a button, triggers, stairs, a scripted trigger) is compiled with `tools/compile-map.sh` and committed as `assets/maps/test.bsp`; `cargo run -p game -- maps/test.bsp` plays it. Textures are `assets/textures/<name>.png` by name: qbsp `-notex -path assets` reads their sizes, and the .bsp holds no pixels. Not yet: button travel, linked doors, door spawnflags, map hot reload.
 - ✅ Baked lightmaps (L1): style-0 grayscale lightmaps read per face (sizes match ericw `light` exactly; a test checks they tile the lump), packed into one atlas, drawn bilinear with 2× overbright. Faces no light reached draw black. Not yet: colored (RGBLIGHTING/.lit), switchable styles, LMSHIFT.
 - ✅ Reference-image test: the test map from its start, 320×180, no fog or palette, against `crates/engine/reference/test-map.png` with GPU-tolerant thresholds; `UPDATE_REFERENCE=1` rewrites it.
-- **Milestone:** fly through a lit, fogged TrenchBroom level that looks like 1997.
+- ✅ **Milestone:** fly through a lit, fogged TrenchBroom level that looks like 1997. Met with the compiled test map (`cargo run -p game -- maps/test.bsp`, F3 to fly); not yet with a map authored in TrenchBroom itself.
 
 ### Phase 2 — Walking around (2–4 weeks) — in progress
 Built against hand-placed brushes, since there is no map loader yet. A BSP or `mapc` loader will produce the same `Brush`es and `Entity`s.

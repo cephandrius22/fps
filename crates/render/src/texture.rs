@@ -123,7 +123,8 @@ impl TextureStore {
         }
     }
 
-    /// Bind group layout for group 1 of textured pipelines.
+    /// Bind group layout for groups 1 (albedo) and 2 (lightmap) of
+    /// textured pipelines: a texture and its sampler.
     pub fn layout(&self) -> &wgpu::BindGroupLayout {
         &self.layout
     }

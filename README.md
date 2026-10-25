@@ -105,7 +105,7 @@ crates/
   physics/         collision: convex brushes, box traces, slide / step / ground moves (glam only)
   script/          Lua host: sandboxed VM, entity classes, hooks, commands (wraps mlua)
   bsp/             Quake map reader: BSP29/BSP2 faces, BSPX brushes, entities (no engine types)
-  engine/          main loop, world + entities, walker and fly camera, asset loading:
+  engine/          main loop, world + entities, walker and fly camera, maps, asset loading:
                    the API games are written against
 game/              the game layer: a sandbox level (game/src/level.rs), or any map passed as an argument
 ```
@@ -143,7 +143,7 @@ Dependency rules:
   and `engine::CursorMode`. `engine/src/gfx.rs` is the only place they are
   converted to `render` types, `engine/src/collision.rs` the only place
   for `physics` types, `engine/src/world.rs` the only user of `script`,
-  and `engine/src/map.rs` the only user of `bsp`, so lower-layer
+  and `engine/src/map/` the only user of `bsp`, so lower-layer
   internals can change without breaking games.
 - `base` has no knowledge of windows, GPUs or game rules. Shared vocabulary
   (`Key`, `Button`) lives there because two layers need it.
@@ -211,6 +211,12 @@ engine App::frame
   turns mid-gray, not dark. Draws without a texture use a 1×1 white one,
   so the shader has no untextured special case. Fragment color = texture ×
   vertex color × light, then fog.
+- **Light.** A draw with a lightmap (`Frame::draw_lit`, or a `Model`
+  with `lightmap`) takes its light from it at each vertex's
+  `lightmap_uv`: sampled bilinear, Quake's 2× overbright (luxel 128 is
+  full brightness). Without one, a fixed sun term lights by normal.
+  Both run in one shader: the no-lightmap fallback texture has alpha 0,
+  which selects the sun.
 - **Brushes.** A level is convex `Brush`es (cuboids, turned boxes, or
   any closed set of planes, such as ramps). The same brush is what
   collides and, through `brush.mesh(meters_per_texture)`, what is drawn,
@@ -292,6 +298,7 @@ engine App::frame
 | Add level geometry | In `game/src/level.rs`: return another `Brush` from `stone()`, or spawn an `Entity` with `models` and `colliders` |
 | Build or change a map | Edit `maps/<name>.map` (TrenchBroom, Quake format; textures are names from `assets/textures/`), then `ERICW_TOOLS=/path/to/ericw-tools/build tools/compile-map.sh <name>` and commit the `.bsp`. Play it with `cargo run -p game -- maps/<name>.bsp` |
 | Script a map entity | Give it a `"script" "ClassName"` key and define the class in `assets/scripts/` (see `maps.lua`) |
+| Change how the test map looks | Expect `view_from_the_start_matches_the_reference` to fail. Check the saved render in `target/reference/`, then rerun with `UPDATE_REFERENCE=1 cargo test -p engine reference` and commit `crates/engine/reference/test-map.png` |
 | Add a door, button or trigger | Spawn an `Entity` with `name` + `mover`, `usable`, or `trigger` that targets the name; see `game/src/level.rs` |
 | Script an entity | Add a class (global table with `on_*` methods) to a file in `assets/scripts/`, and set the entity's `script` to its name. New script files load on the next start; edits reload live. |
 | Tune movement | Change `walker.settings` fields, or start from `WalkSettings::arena()` / `survival()` |
@@ -313,13 +320,18 @@ cargo test
 | `base` | unit tests: slots, Vfs, watcher, image validation, PNG decode (all color types) and round-trip, mip downsampling (linear-light average, odd sizes), error chains |
 | `platform` | unit tests: clock math (injected time), key/button mapping, cursor grab fallback order |
 | `script` | unit tests: hooks with per-instance state and names, missing hooks skipped, unknown classes rejected, every `world.*` command and `print`, reload keeping state, error messages naming the file or hook, runaway loops stopped, no io/os/file access |
-| `bsp` | unit tests: header and lump bounds, record sizes, the cursor, entity text (pairs, repeats, model indices, errors with line numbers), contents, missing textures, garbage input; `tests/test_map.rs` reads the committed test map: version, textures and sizes, models, entities, counter-clockwise faces, the floor, BRUSHLIST brushes |
+| `bsp` | unit tests: header and lump bounds, record sizes, the cursor, entity text (pairs, repeats, model indices, errors with line numbers), contents, missing textures, garbage input, luxel grids (snapping, negative texels), texel precision, Newell winding; `tests/test_map.rs` reads the committed test map: version, textures and sizes, models, entities, counter-clockwise faces, the floor, BRUSHLIST brushes, lightmaps that tile the lighting lump exactly, lightmap coordinates inside their grids |
 | `physics` | unit tests: brush construction (planes, bevels, faces, winding), box and ray traces (fractions, normals, start-solid), slide along walls and into corners, step up and down, ground detection, snap down |
 | `render` | unit tests: camera, letterbox, vertex and uniform layouts, fog encoding, mip chain sizes, palette loading, readback padding, GPU-test skip policy |
-| `render` GPU | `tests/headless.rs`: renders offscreen and checks pixels (culling, depth, shader reload, texture mapping, nearest filtering, texture replace/destroy/size limit, mipmaps, fog curves and background, palette quantization, dither pattern) |
+| `render` GPU | `tests/headless.rs`: renders offscreen and checks pixels (culling, depth, shader reload, texture mapping, nearest filtering, texture replace/destroy/size limit, mipmaps, fog curves and background, palette quantization, dither pattern, lightmap brightness and lightmap UVs) |
 | shaders | `tests/shaders.rs`: naga validates every shipped `.wgsl` (no GPU needed) |
-| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach; scripts relaying fires, spawn/use/enter/tick hooks, delayed fires, the per-tick fire cap), shipped scripts load, brush meshes, map conversion (axes and handedness, planes, yaw, bounds, door travel and trigger fields, player start, malformed keys), multi-brush doors, `World::find`, asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload, and for the real test map (start and title, solid floor, button opens door 1, door 2 opens on approach, a walker climbs its stairs) |
+| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach; scripts relaying fires, spawn/use/enter/tick hooks, delayed fires, the per-tick fire cap), shipped scripts load, brush meshes, map conversion (axes and handedness, planes, yaw, bounds, door travel and trigger fields, player start, malformed keys), multi-brush doors, `World::find`, lightmap atlas packing (no overlaps, luxels in place, power-of-two width), reference-image tolerances, asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload, and for the real test map (start and title, solid floor, button opens door 1, door 2 opens on approach, a walker climbs its stairs, and the view from the start against the reference image `crates/engine/reference/test-map.png`) |
 | `game` | cube geometry; level layout (spawn is clear, ramp slopes, stair rises, door seals and hides); the scripted secret button with the real `sandbox.lua` (opens on the third press only); landing from flight needs room; profile and palette cycling |
+
+The reference-image test compares within GPU-to-GPU tolerances (a
+channel within 24 levels, at most 1% of pixels off, mean difference ≤ 3),
+since Metal, lavapipe and Windows' software adapter rasterize slightly
+differently.
 
 GPU tests in any crate use `render::test_support` (a dev-only feature), so
 they share one policy: they skip only when no GPU adapter exists; any other renderer
