@@ -9,7 +9,7 @@
 //! ```
 
 use crate::error::Result;
-use glam::{Mat4, Vec4};
+use glam::{Mat4, Vec3, Vec4};
 
 use crate::mesh::{MeshStore, Vertex};
 use crate::shader::{checked, compile};
@@ -64,7 +64,7 @@ impl FrameUniforms {
             return frame;
         };
 
-        frame.fog_color = Vec4::from((glam::Vec3::from(fog.color), 1.0));
+        frame.fog_color = Vec3::from(fog.color).extend(1.0);
         match fog.falloff {
             Falloff::Linear { start, end } => {
                 frame.fog_mode = fog_mode::LINEAR;
@@ -330,8 +330,6 @@ fn create_bind_group(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use glam::Vec3;
 
     const FOG_COLOR: [f32; 3] = [0.1, 0.2, 0.3];
 

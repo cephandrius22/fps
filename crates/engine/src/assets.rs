@@ -163,6 +163,20 @@ mod tests {
     }
 
     #[test]
+    fn reload_swaps_palette_and_rejects_oversized_one() {
+        let vfs = repo_assets();
+        let source = |shader| vfs.read_text(shader_path(shader));
+        let Some(mut renderer) = render::test_support::headless_or_skip(Default::default(), source)
+        else {
+            return;
+        };
+
+        reload(&mut renderer, &vfs, "palettes/default.png", Asset::Palette).unwrap();
+        // 64×64 = 4096 colors, over the 256 limit.
+        assert!(reload(&mut renderer, &vfs, "textures/crate.png", Asset::Palette).is_err());
+    }
+
+    #[test]
     fn reload_rejects_broken_shader() {
         let vfs = repo_assets();
         let source = |shader| vfs.read_text(shader_path(shader));

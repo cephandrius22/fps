@@ -76,13 +76,8 @@ impl TextureStore {
         });
 
         let white = Image::solid(WHITE);
-        let fallback = upload(
-            device,
-            queue,
-            &layout,
-            &sampler,
-            &mip_chain(&white, mipmaps),
-        );
+        let mips = smaller_mips(&white, mipmaps);
+        let fallback = create_gpu_texture(device, queue, &layout, &sampler, &white, &mips);
 
         Self {
             layout,
@@ -131,8 +126,8 @@ impl TextureStore {
     }
 
     fn upload(&self, device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> GpuTexture {
-        let levels = mip_chain(image, self.mipmaps);
-        upload(device, queue, &self.layout, &self.sampler, &levels)
+        let mips = smaller_mips(image, self.mipmaps);
+        create_gpu_texture(device, queue, &self.layout, &self.sampler, image, &mips)
     }
 
     /// Frees a texture. False if the handle was already stale.
@@ -175,37 +170,39 @@ fn mip_filter(mipmaps: Mipmaps) -> wgpu::MipmapFilterMode {
     }
 }
 
-/// Every level to upload: just `image` when mipmaps are off, else down
-/// to 1×1. Sizes match the GPU's own rule, max(1, size >> level).
-fn mip_chain(image: &Image, mipmaps: Mipmaps) -> Vec<Image> {
-    let mut levels = vec![image.clone()];
+/// Mip levels below `image`, largest first, down to 1×1; none when
+/// mipmaps are off. Sizes follow the GPU's rule, max(1, size >> level).
+fn smaller_mips(image: &Image, mipmaps: Mipmaps) -> Vec<Image> {
+    let mut mips: Vec<Image> = Vec::new();
     if mipmaps == Mipmaps::Off {
-        return levels;
+        return mips;
     }
 
-    while let Some(last) = levels.last()
-        && (last.width() > 1 || last.height() > 1)
-    {
+    loop {
+        let last = mips.last().unwrap_or(image);
+        if last.width() == 1 && last.height() == 1 {
+            return mips;
+        }
+
         let next = last.half();
-        levels.push(next);
+        mips.push(next);
     }
-
-    levels
 }
 
-/// Uploads `levels` (base first) as one texture with a mip chain.
-fn upload(
+/// Creates a texture from `base` plus its smaller `mips`, with the bind
+/// group draws use.
+fn create_gpu_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
-    levels: &[Image],
+    base: &Image,
+    mips: &[Image],
 ) -> GpuTexture {
-    let base = &levels[0];
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("texture"),
         size: extent(base),
-        mip_level_count: levels.len() as u32,
+        mip_level_count: 1 + mips.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: FORMAT,
@@ -214,7 +211,8 @@ fn upload(
     });
 
     // Unlike buffer readback, texture writes need no row padding.
-    for (level, image) in levels.iter().enumerate() {
+    let levels = std::iter::once(base).chain(mips);
+    for (level, image) in levels.enumerate() {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -275,19 +273,20 @@ mod tests {
     }
 
     #[test]
-    fn mip_chain_off_is_base_only() {
-        assert_eq!(sizes(&mip_chain(&blank(64, 64), Mipmaps::Off)), [(64, 64)]);
+    fn mipmaps_off_adds_no_levels() {
+        assert!(smaller_mips(&blank(64, 64), Mipmaps::Off).is_empty());
     }
 
     #[test]
-    fn mip_chain_runs_to_one_pixel() {
-        let levels = mip_chain(&blank(8, 2), Mipmaps::Nearest);
-        assert_eq!(sizes(&levels), [(8, 2), (4, 1), (2, 1), (1, 1)]);
+    fn mips_run_down_to_one_pixel() {
+        let mips = smaller_mips(&blank(8, 2), Mipmaps::Nearest);
+        assert_eq!(sizes(&mips), [(4, 1), (2, 1), (1, 1)]);
     }
 
     #[test]
-    fn mip_chain_rounds_odd_sizes_down() {
-        let levels = mip_chain(&blank(5, 3), Mipmaps::Linear);
-        assert_eq!(sizes(&levels), [(5, 3), (2, 1), (1, 1)]);
+    fn mips_round_odd_sizes_down() {
+        let mips = smaller_mips(&blank(5, 3), Mipmaps::Linear);
+        assert_eq!(sizes(&mips), [(2, 1), (1, 1)]);
+        assert!(smaller_mips(&Image::solid(WHITE), Mipmaps::Nearest).is_empty());
     }
 }

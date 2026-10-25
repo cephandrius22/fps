@@ -95,10 +95,9 @@ impl Fog {
 
 /// Palette quantization of the final low-res image. Uses the palette
 /// from [`Gfx::load_palette`]; without one it has no effect.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Quantize {
     /// Full color.
-    #[default]
     Off,
     /// Each pixel becomes its nearest palette color. Gradients band.
     Nearest,
@@ -271,10 +270,7 @@ impl Gfx<'_> {
     /// Loads a PNG from the asset directory, e.g. "textures/crate.png",
     /// and watches it: saving the file updates the texture live.
     pub fn load_texture(&mut self, path: &str) -> Result<TextureHandle, EngineError> {
-        let load_err = |source: BoxError| EngineError::Load {
-            path: path.to_owned(),
-            source,
-        };
+        let load_err = load_error(path);
 
         let image = assets::load_image(self.vfs, path).map_err(load_err)?;
         let id = self
@@ -290,10 +286,7 @@ impl Gfx<'_> {
     /// every pixel is one color, row-major, at most 256 (16×16). Watched
     /// like a texture. Replaces any previous palette.
     pub fn load_palette(&mut self, path: &str) -> Result<(), EngineError> {
-        let load_err = |source: BoxError| EngineError::Load {
-            path: path.to_owned(),
-            source,
-        };
+        let load_err = load_error(path);
 
         let image = assets::load_image(self.vfs, path).map_err(load_err)?;
         self.renderer
@@ -330,6 +323,14 @@ impl Gfx<'_> {
     pub fn destroy_mesh(&mut self, mesh: MeshHandle) {
         let destroyed = self.renderer.destroy_mesh(mesh.0);
         base::verify!(destroyed, "mesh {mesh:?} destroyed twice");
+    }
+}
+
+/// Wraps any failure loading `path` so the error names the file.
+fn load_error(path: &str) -> impl Fn(BoxError) -> EngineError + Copy + '_ {
+    move |source| EngineError::Load {
+        path: path.to_owned(),
+        source,
     }
 }
 

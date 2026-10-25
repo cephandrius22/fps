@@ -39,7 +39,7 @@ Section 11 has the detail for each phase.
 | Hot reload | File watcher plus an asset registry. Shaders and textures reload; a bad file is rejected and the old version stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
 | Debugging | Logging (`RUST_LOG`), `verify!` asserts, F12 screenshot, `ENGINE_CAPTURE_FRAME=N` capture-and-exit | `crates/base`, `crates/engine/src/debug.rs` |
 | Errors | Typed `thiserror` errors per area; `EngineError` categories for games; `base::chain` for logs | `crates/*/src/error.rs` and per module |
-| Tests | 144 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
+| Tests | 145 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
 | CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows with the pinned toolchain. GPU tests run on all three (Linux via Mesa lavapipe); a skip would show as a run warning. | `.github/workflows/ci.yml` |
 | Build config | Toolchain pinned to 1.99.1, lints in `[workspace.lints]`, `publish = false`, dependency debug info reduced to line tables | `rust-toolchain.toml`, `Cargo.toml` |
 
