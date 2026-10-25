@@ -221,7 +221,7 @@ fn door() -> Entity {
 
     Entity {
         name: Some(DOOR.into()),
-        collider: Some(brush),
+        colliders: vec![brush],
         mover: Some(Mover {
             travel: DOOR_TRAVEL,
             speed: DOOR_SPEED,
@@ -240,7 +240,7 @@ fn door_button() -> Entity {
     );
 
     Entity {
-        collider: Some(brush),
+        colliders: vec![brush],
         usable: Some(Usable {
             target: Some(DOOR.into()),
         }),
@@ -276,7 +276,7 @@ fn secret_panel() -> Entity {
 
     Entity {
         name: Some(SECRET.into()),
-        collider: Some(brush),
+        colliders: vec![brush],
         mover: Some(Mover {
             travel: Vec3::NEG_Y * DOOR_HEIGHT,
             speed: SECRET_SPEED,
@@ -296,7 +296,7 @@ fn secret_button() -> Entity {
     );
 
     Entity {
-        collider: Some(brush),
+        colliders: vec![brush],
         script: Some(SECRET_BUTTON_CLASS.into()),
         ..Default::default()
     }
@@ -317,11 +317,13 @@ pub fn build(gfx: &mut Gfx, world: &mut World, textures: &Textures) {
         world.spawn(Entity {
             position: base + Vec3::Y * CRATE_HALF.y,
             rotation,
-            collider: Brush::oriented_box(Vec3::ZERO, CRATE_HALF, rotation),
-            model: Some(Model {
+            colliders: Brush::oriented_box(Vec3::ZERO, CRATE_HALF, rotation)
+                .into_iter()
+                .collect(),
+            models: vec![Model {
                 mesh: crate_mesh,
                 texture: wood_texture,
-            }),
+            }],
             ..Default::default()
         });
     }
@@ -336,42 +338,42 @@ pub fn build(gfx: &mut Gfx, world: &mut World, textures: &Textures) {
 /// Entity solid as `brush`, in world space.
 fn solid(brush: Brush) -> Entity {
     Entity {
-        collider: Some(brush),
+        colliders: vec![brush],
         ..Default::default()
     }
 }
 
-/// Adds a model drawn from the entity's own collider.
+/// Adds one model per collider, drawn from the brush itself.
 fn with_mesh(
     gfx: &mut Gfx,
     entity: Entity,
     meters_per_texture: f32,
     texture: Option<TextureHandle>,
 ) -> Entity {
-    let collider = entity
-        .collider
-        .as_ref()
-        .expect("meshed entities have a collider");
-    let mesh = gfx.create_mesh(&collider.mesh(meters_per_texture));
+    let models = entity
+        .colliders
+        .iter()
+        .map(|brush| Model {
+            mesh: gfx.create_mesh(&brush.mesh(meters_per_texture)),
+            texture,
+        })
+        .collect();
 
-    Entity {
-        model: Some(Model { mesh, texture }),
-        ..entity
-    }
+    Entity { models, ..entity }
 }
 
-/// Adds a plain red model drawn from the entity's collider.
+/// Adds plain red models drawn from the entity's colliders.
 fn red_button(gfx: &mut Gfx, entity: Entity) -> Entity {
-    let collider = entity.collider.as_ref().expect("buttons have a collider");
-    let mesh = gfx.create_mesh(&tinted(collider.mesh(WOOD_METERS), BUTTON_RED));
-
-    Entity {
-        model: Some(Model {
-            mesh,
+    let models = entity
+        .colliders
+        .iter()
+        .map(|brush| Model {
+            mesh: gfx.create_mesh(&tinted(brush.mesh(WOOD_METERS), BUTTON_RED)),
             texture: None,
-        }),
-        ..entity
-    }
+        })
+        .collect();
+
+    Entity { models, ..entity }
 }
 
 fn tinted(mut mesh: MeshData, color: [f32; 4]) -> MeshData {
@@ -497,7 +499,7 @@ mod tests {
     #[test]
     fn open_door_hides_inside_the_wall() {
         let mover = door().mover.unwrap();
-        let open = door().collider.unwrap().bounds().min + mover.travel;
+        let open = door().colliders[0].bounds().min + mover.travel;
         // Fully open, the door's near edge clears the doorway.
         assert!(open.x + 2.0 * DOOR_HALF_WIDTH <= -DOOR_HALF_WIDTH + 1e-4);
         assert!(open.x >= ROOM_MIN.x);

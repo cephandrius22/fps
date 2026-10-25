@@ -3,6 +3,9 @@
 //! upscaled. A Lua-scripted button inside the room opens a secret panel
 //! (assets/scripts/sandbox.lua).
 //!
+//! Or play a Quake map instead: `cargo run -p game -- maps/test.bsp`
+//! loads it from the asset directory and starts at its player start.
+//!
 //! Bindings owned here (walking comes from `Walker`, flying from
 //! `FlyCamera`, F12 screenshots from the engine; README.md lists them
 //! all):
@@ -111,9 +114,10 @@ struct Player {
 }
 
 impl Player {
-    fn new() -> Self {
+    /// Walking, Survival profile, feet at `feet` facing `yaw`.
+    fn new(feet: Vec3, yaw: f32) -> Self {
         let profile = Profile::Survival;
-        let walker = Walker::new(level::SPAWN, 0.0, 0.0, profile.settings());
+        let walker = Walker::new(feet, yaw, 0.0, profile.settings());
 
         Self {
             movement: Movement::Walk(walker),
@@ -239,7 +243,16 @@ struct Scene {
     cube: MeshHandle,
 }
 
+/// What to play.
+enum Level {
+    /// The built-in brush level (game/src/level.rs).
+    Sandbox,
+    /// A compiled Quake map, by asset path, e.g. "maps/test.bsp".
+    Map(String),
+}
+
 struct Sandbox {
+    level: Level,
     scene: Option<Scene>,
     player: Player,
     view: View,
@@ -247,10 +260,11 @@ struct Sandbox {
 }
 
 impl Sandbox {
-    fn new() -> Self {
+    fn new(level: Level) -> Self {
         Self {
+            level,
             scene: None,
-            player: Player::new(),
+            player: Player::new(level::SPAWN, 0.0),
             view: View::new(),
             spin: Spin::default(),
         }
@@ -282,7 +296,16 @@ impl Game for Sandbox {
             wood: gfx.load_texture("textures/crate.png")?,
         };
         gfx.load_palette("palettes/default.png")?;
-        level::build(gfx, world, &textures);
+
+        match &self.level {
+            Level::Sandbox => level::build(gfx, world, &textures),
+            Level::Map(path) => {
+                let info = gfx.load_map(path, world)?;
+                if let Some(start) = info.start {
+                    self.player = Player::new(start.feet, start.yaw);
+                }
+            }
+        }
 
         self.scene = Some(Scene {
             cube: gfx.create_mesh(&shapes::cube(Tint::PerFace)),
@@ -323,12 +346,21 @@ impl Game for Sandbox {
 
 // anyhow at the top: the binary only reports errors, it never matches them.
 fn main() -> anyhow::Result<()> {
-    let config = Config {
-        title: "Retro FPS — sandbox".into(),
-        ..Default::default()
+    // The first argument, if any, is a map to play instead of the sandbox.
+    let level = match std::env::args().nth(1) {
+        Some(path) => Level::Map(path),
+        None => Level::Sandbox,
+    };
+    let title = match &level {
+        Level::Sandbox => "Retro FPS — sandbox".to_owned(),
+        Level::Map(path) => format!("Retro FPS — {path}"),
     };
 
-    engine::run(config, Sandbox::new())?;
+    let config = Config {
+        title,
+        ..Default::default()
+    };
+    engine::run(config, Sandbox::new(level))?;
     Ok(())
 }
 

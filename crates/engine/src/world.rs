@@ -19,7 +19,7 @@
 //!
 //! The engine owns the `World`, loads scripts into it, and draws it; the
 //! game spawns entities and advances it. Static level geometry is
-//! entities too (a model plus a collider), or invisible clip brushes via
+//! entities too (models plus colliders), or invisible clip brushes via
 //! `add_brush`.
 
 use base::{SlotId, Slots};
@@ -50,7 +50,8 @@ struct Slot {
     entity: Entity,
     /// Position at the previous tick, for interpolation.
     prev_position: Vec3,
-    body: Option<BodyId>,
+    /// One physics body per collider brush.
+    bodies: Vec<BodyId>,
     /// Used only when `entity.mover` is set.
     mover: MoverState,
     /// Player was inside the trigger volume last tick.
@@ -88,15 +89,19 @@ impl World {
         self.physics.add(brush.0);
     }
 
-    /// Adds an entity. Its collider, if any, becomes solid at once; its
+    /// Adds an entity. Its colliders, if any, become solid at once; its
     /// script, if any, gets an instance and `on_spawn`. A script class
     /// that does not exist is logged, and the entity spawns without it.
     pub fn spawn(&mut self, entity: Entity) -> EntityId {
-        let body = entity.collider.as_ref().map(|collider| {
-            let body = self.physics.add(collider.0.clone());
-            self.physics.set_offset(body, entity.position);
-            body
-        });
+        let bodies = entity
+            .colliders
+            .iter()
+            .map(|collider| {
+                let body = self.physics.add(collider.0.clone());
+                self.physics.set_offset(body, entity.position);
+                body
+            })
+            .collect();
         let instance = entity
             .script
             .as_deref()
@@ -104,7 +109,7 @@ impl World {
 
         let slot = Slot {
             prev_position: entity.position,
-            body,
+            bodies,
             mover: MoverState::new(entity.position),
             inside: false,
             spent: false,
@@ -121,16 +126,24 @@ impl World {
         id
     }
 
-    /// Removes an entity and its collider. False if already gone.
+    /// Removes an entity and its colliders. False if already gone.
     pub fn despawn(&mut self, id: EntityId) -> bool {
         let Some(slot) = self.entities.remove(id.0) else {
             return false;
         };
 
-        if let Some(body) = slot.body {
+        for body in slot.bodies {
             self.physics.remove(body);
         }
         true
+    }
+
+    /// The first entity named `name`, e.g. a door from a map.
+    pub fn find(&self, name: &str) -> Option<EntityId> {
+        self.entities
+            .iter()
+            .find(|(_, slot)| slot.entity.name.as_deref() == Some(name))
+            .map(|(id, _)| EntityId(id))
     }
 
     /// The entity, as of the latest tick (movers update `position`).
@@ -217,7 +230,7 @@ impl World {
             let Some(mover) = &slot.entity.mover else {
                 continue;
             };
-            if let Some(position) = slot.mover.step(mover, slot.body, &mut obstacles, dt) {
+            if let Some(position) = slot.mover.step(mover, &slot.bodies, &mut obstacles, dt) {
                 slot.entity.position = position;
             }
         }
@@ -227,18 +240,20 @@ impl World {
         self.run_fires(dt);
     }
 
-    /// Queues every entity's model, between the last two ticks.
+    /// Queues every entity's models, between the last two ticks.
     pub fn draw(&self, frame: &mut Frame) {
         for (_, slot) in self.entities.iter() {
-            let Some(model) = slot.entity.model else {
+            if slot.entity.models.is_empty() {
                 continue;
-            };
+            }
 
             let position = slot.prev_position.lerp(slot.entity.position, frame.alpha);
             let transform = Mat4::from_rotation_translation(slot.entity.rotation, position);
-            match model.texture {
-                Some(texture) => frame.draw_textured(model.mesh, texture, transform),
-                None => frame.draw_mesh(model.mesh, transform),
+            for model in &slot.entity.models {
+                match model.texture {
+                    Some(texture) => frame.draw_textured(model.mesh, texture, transform),
+                    None => frame.draw_mesh(model.mesh, transform),
+                }
             }
         }
     }
@@ -382,7 +397,7 @@ impl World {
     fn entity_of(&self, body: BodyId) -> Option<EntityId> {
         self.entities
             .iter()
-            .find(|(_, slot)| slot.body == Some(body))
+            .find(|(_, slot)| slot.bodies.contains(&body))
             .map(|(id, _)| EntityId(id))
     }
 }
@@ -407,10 +422,10 @@ mod tests {
     fn door(close: Close) -> Entity {
         Entity {
             name: Some(DOOR.into()),
-            collider: Some(Brush::cuboid(
+            colliders: vec![Brush::cuboid(
                 Vec3::new(-1.0, 0.0, -0.1),
                 Vec3::new(1.0, 2.0, 0.1),
-            )),
+            )],
             mover: Some(Mover {
                 travel: Vec3::Y * 2.0,
                 speed: 4.0,
@@ -433,6 +448,15 @@ mod tests {
     /// Player standing in the doorway.
     fn in_doorway() -> Option<Aabb> {
         Some(Aabb::from_center(Vec3::new(0.0, 0.9, 0.0), HALF))
+    }
+
+    #[test]
+    fn find_returns_the_named_entity() {
+        let mut world = World::new();
+        let id = world.spawn(door(Close::OnFire));
+
+        assert_eq!(world.find(DOOR), Some(id));
+        assert_eq!(world.find("nobody"), None);
     }
 
     #[test]
@@ -514,6 +538,40 @@ mod tests {
     }
 
     #[test]
+    fn multi_brush_door_moves_and_backs_off_as_one() {
+        // Two 1 m halves side by side, x −1..0 and 0..1.
+        let half = |x0: f32| Brush::cuboid(Vec3::new(x0, 0.0, -0.1), Vec3::new(x0 + 1.0, 2.0, 0.1));
+        let mut world = World::new();
+        let id = world.spawn(Entity {
+            colliders: vec![half(-1.0), half(0.0)],
+            ..door(Close::After(0.0))
+        });
+        let solid_at = |world: &World, x: f32| {
+            let ray = world.trace(Vec3::new(x, 1.0, 5.0), Vec3::new(x, 1.0, -5.0), Vec3::ZERO);
+            ray.entity == Some(id)
+        };
+
+        world.fire(DOOR);
+        run(&mut world, 0.6, None);
+        assert!(
+            !solid_at(&world, -0.5) && !solid_at(&world, 0.5),
+            "both halves open"
+        );
+
+        // Player under the right half only: the whole door backs off.
+        let under_right = Some(Aabb::from_center(Vec3::new(0.5, 0.9, 0.0), HALF));
+        run(&mut world, 2.0, under_right);
+        assert!(door_y(&world, id) > 0.2);
+        assert!(!solid_at(&world, -0.5), "left half stayed with the right");
+
+        run(&mut world, 1.5, None);
+        assert!(
+            solid_at(&world, -0.5) && solid_at(&world, 0.5),
+            "both closed"
+        );
+    }
+
+    #[test]
     fn trigger_fires_on_entry_once_or_every_time() {
         let mut world = World::new();
         let id = world.spawn(door(Close::OnFire));
@@ -552,7 +610,7 @@ mod tests {
         let id = world.spawn(door(Close::OnFire));
         world.spawn(Entity {
             position: Vec3::new(3.0, 1.0, 0.0),
-            collider: Some(Brush::cuboid(Vec3::splat(-0.1), Vec3::splat(0.1))),
+            colliders: vec![Brush::cuboid(Vec3::splat(-0.1), Vec3::splat(0.1))],
             usable: Some(Usable {
                 target: Some(DOOR.into()),
             }),
@@ -585,7 +643,7 @@ mod tests {
         Entity {
             name: name.map(Into::into),
             position,
-            collider: Some(Brush::cuboid(Vec3::splat(-0.1), Vec3::splat(0.1))),
+            colliders: vec![Brush::cuboid(Vec3::splat(-0.1), Vec3::splat(0.1))],
             script: Some(class.into()),
             ..Default::default()
         }

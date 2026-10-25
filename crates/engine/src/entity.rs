@@ -1,5 +1,7 @@
 //! Entities: one flat struct with optional components. A crate is a
 //! model plus a collider; a door adds a mover; a button adds `Usable`.
+//! Models and colliders are lists, because a brush entity from a map
+//! (a door, say) is often several brushes with several textures.
 //!
 //! Entities talk by name, as in Quake's target / targetname: a trigger,
 //! button or script fires a target name, and every entity with that
@@ -32,10 +34,12 @@ pub struct Entity {
     /// Turns the model only. Colliders never rotate: give a turned
     /// object a turned brush (`Brush::oriented_box`).
     pub rotation: Quat,
-    /// What to draw.
-    pub model: Option<Model>,
-    /// Solid volume, relative to `position`.
-    pub collider: Option<Brush>,
+    /// What to draw: one mesh per texture, all at the entity's
+    /// position and rotation. Empty draws nothing.
+    pub models: Vec<Model>,
+    /// Solid volumes, relative to `position`; movers move them all
+    /// together. Empty is not solid.
+    pub colliders: Vec<Brush>,
     /// Slides between two positions when fired: doors, gates.
     pub mover: Option<Mover>,
     /// Fires a target when the player walks in.
@@ -54,8 +58,8 @@ impl Default for Entity {
             name: None,
             position: Vec3::ZERO,
             rotation: Quat::IDENTITY,
-            model: None,
-            collider: None,
+            models: Vec::new(),
+            colliders: Vec::new(),
             mover: None,
             trigger: None,
             usable: None,

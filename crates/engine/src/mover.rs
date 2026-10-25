@@ -67,13 +67,13 @@ impl MoverState {
         };
     }
 
-    /// Advances by `dt`, moving `body` along. A step that would push into
-    /// the player is skipped: opening waits, closing turns back. Returns
-    /// the new position when the mover moved.
+    /// Advances by `dt`, moving `bodies` along. A step that would push
+    /// any of them into the player is skipped: opening waits, closing
+    /// turns back. Returns the new position when the mover moved.
     pub fn step(
         &mut self,
         mover: &Mover,
-        body: Option<BodyId>,
+        bodies: &[BodyId],
         obstacles: &mut Obstacles,
         dt: f32,
     ) -> Option<Vec3> {
@@ -91,7 +91,7 @@ impl MoverState {
         let from = self.position(mover, self.progress);
         let to = self.position(mover, progress);
 
-        if !try_move(obstacles, body, from, to) {
+        if !try_move(obstacles, bodies, from, to) {
             if self.motion == Motion::Closing {
                 self.motion = Motion::Opening;
             }
@@ -132,20 +132,22 @@ fn progress_rate(mover: &Mover) -> f32 {
     mover.speed / distance
 }
 
-/// Moves the body from `from` to `to`. If that overlaps the player, puts
-/// it back and returns false. Movers without a body always move.
-fn try_move(obstacles: &mut Obstacles, body: Option<BodyId>, from: Vec3, to: Vec3) -> bool {
-    let Some(body) = body else {
-        return true;
-    };
-
+/// Moves every body from `from` to `to`. If any then overlaps the
+/// player, puts them all back and returns false. Movers without bodies
+/// always move.
+fn try_move(obstacles: &mut Obstacles, bodies: &[BodyId], from: Vec3, to: Vec3) -> bool {
     let physics = &mut *obstacles.physics;
-    physics.set_offset(body, to);
+    for &body in bodies {
+        physics.set_offset(body, to);
+    }
+
     let crushing = obstacles
         .player
-        .is_some_and(|player| physics.overlaps(body, &player));
+        .is_some_and(|player| bodies.iter().any(|&body| physics.overlaps(body, &player)));
     if crushing {
-        physics.set_offset(body, from);
+        for &body in bodies {
+            physics.set_offset(body, from);
+        }
     }
 
     !crushing
@@ -176,7 +178,7 @@ mod tests {
         };
 
         (0..(seconds / DT).round() as u32)
-            .filter_map(|_| state.step(mover, None, &mut obstacles, DT))
+            .filter_map(|_| state.step(mover, &[], &mut obstacles, DT))
             .last()
     }
 

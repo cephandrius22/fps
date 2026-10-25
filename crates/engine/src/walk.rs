@@ -709,10 +709,10 @@ mod tests {
         let mut world = world([]);
         world.spawn(Entity {
             name: Some("door".into()),
-            collider: Some(Brush::cuboid(
+            colliders: vec![Brush::cuboid(
                 Vec3::new(-1.0, 0.0, -3.1),
                 Vec3::new(1.0, 2.2, -2.9),
-            )),
+            )],
             mover: Some(Mover {
                 travel: Vec3::X * -2.5,
                 speed: 5.0,

@@ -238,6 +238,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bsp"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -520,6 +528,7 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "base",
+ "bsp",
  "glam",
  "log",
  "physics",

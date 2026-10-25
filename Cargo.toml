@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 base = { path = "crates/base" }
+bsp = { path = "crates/bsp" }
 physics = { path = "crates/physics" }
 platform = { path = "crates/platform" }
 render = { path = "crates/render" }

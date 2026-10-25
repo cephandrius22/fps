@@ -135,6 +135,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::{headless, repo_assets};
 
     #[test]
     fn every_shader_is_registered_under_its_path() {
@@ -163,10 +164,6 @@ mod tests {
         assert_eq!(registry.lookup("textures/brick.png"), None);
     }
 
-    fn repo_assets() -> Vfs {
-        Vfs::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets")).unwrap()
-    }
-
     #[test]
     fn load_image_decodes_shipped_texture() {
         let image = load_image(&repo_assets(), "textures/crate.png").unwrap();
@@ -187,9 +184,7 @@ mod tests {
     #[test]
     fn reload_replaces_texture_and_keeps_old_on_error() {
         let vfs = repo_assets();
-        let source = |shader| vfs.read_text(shader_path(shader));
-        let Some(mut renderer) = render::test_support::headless_or_skip(Default::default(), source)
-        else {
+        let Some(mut renderer) = headless(&vfs) else {
             return;
         };
         let id = renderer.create_texture(&Image::solid([0; 4])).unwrap();
@@ -220,9 +215,7 @@ mod tests {
     #[test]
     fn reload_swaps_palette_and_rejects_oversized_one() {
         let vfs = repo_assets();
-        let source = |shader| vfs.read_text(shader_path(shader));
-        let Some(mut renderer) = render::test_support::headless_or_skip(Default::default(), source)
-        else {
+        let Some(mut renderer) = headless(&vfs) else {
             return;
         };
 
@@ -250,9 +243,7 @@ mod tests {
     #[test]
     fn reload_rejects_broken_shader() {
         let vfs = repo_assets();
-        let source = |shader| vfs.read_text(shader_path(shader));
-        let Some(mut renderer) = render::test_support::headless_or_skip(Default::default(), source)
-        else {
+        let Some(mut renderer) = headless(&vfs) else {
             return;
         };
 
@@ -299,9 +290,8 @@ mod tests {
 
     #[test]
     fn script_reload_reports_lua_errors() {
-        let source = |shader| repo_assets().read_text(shader_path(shader));
-        let Some(mut renderer) = render::test_support::headless_or_skip(Default::default(), source)
-        else {
+        let vfs = repo_assets();
+        let Some(mut renderer) = headless(&vfs) else {
             return;
         };
 

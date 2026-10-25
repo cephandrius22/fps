@@ -6,9 +6,9 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 
 ## Status (2026-10-25)
 
-**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phases 0 and 0.5 are done** and CI is green on all three OSes. **Phase 1** has everything except what needs a map; ericw-tools is now built locally, so that work is unblocked. **Phase 2 is in progress**: brush collision, the Arena and Survival walker, entities, doors, buttons and triggers, and Lua-scripted entity behavior work in a brush-built sandbox level. Spawning from map entities remains, and scripts cannot yet read world state. See [README.md](README.md) for how the code is organized and how to build it.
+**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phases 0 and 0.5 are done** and CI is green on all three OSes. **Phase 1** loads Quake maps compiled with ericw-tools (geometry, BSPX brushes, entities); lightmaps and the reference-image test remain. **Phase 2 is in progress**: brush collision, the Arena and Survival walker, entities (spawned in code or from maps), doors, buttons and triggers, and Lua-scripted entity behavior work in both the sandbox level and the test map. Scripts cannot yet read world state. See [README.md](README.md) for how the code is organized and how to build it.
 
-**Next.** Recommended: finish Phase 1 with a real map, since it feeds Phase 2 too (map entities, real collision): a BSP loader, lightmaps, then the reference-image test. ericw-tools 2.0.0-alpha11 (`qbsp`, `vis`, `light`) is built on the development machine, outside the repo; CI has no ericw-tools, so compiled test maps get committed. Also unblocked: script read access to world state (entity positions, the player, mover state) and direct mover control, so AI and puzzles can live in Lua; crouching; moving platforms that carry the player; debug drawing of collision hulls. Blocked on a decision: saves (pick a serialization approach, e.g. approve serde).
+**Next.** Recommended: lightmaps (L1) from the BSP's lighting lump, which `tools/compile-map.sh` already bakes with `light`, then the reference-image test of the test map; that completes Phase 1. ericw-tools 2.0.0-alpha11 (`qbsp`, `vis`, `light`) is built on the development machine, outside the repo; CI has no ericw-tools, so compiled maps are committed. Also unblocked: script read access to world state (entity positions, the player, mover state) and direct mover control, so AI and puzzles can live in Lua; crouching; moving platforms that carry the player; debug drawing of collision hulls. Blocked on a decision: saves (pick a serialization approach, e.g. approve serde).
 
 ### Roadmap
 
@@ -16,8 +16,8 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 |---|---|---|
 | 0 — Foundations | Window, loop, GPU, low-res cube | ✅ Done |
 | 0.5 — Follow-ups | Code-health items found in review | ✅ Done (optional renames skipped) |
-| 1 — First world | Fly through a lit, fogged BSP level | 🟡 In progress: 5 of 8 items done |
-| 2 — Walking around | Collision, character controller, entities, Lua | 🟡 In progress: all 4 items started; Lua is a first slice, map spawning waits for a map loader |
+| 1 — First world | Fly through a lit, fogged BSP level | 🟡 In progress: 6 of 8 items done; lightmaps and the reference-image test left |
+| 2 — Walking around | Collision, character controller, entities, Lua | 🟡 In progress: all 4 items working, including map entities; Lua is a first slice |
 | 3 — Own toolchain | `mapc`, lightmap baker, glTF props | Not started |
 | 4 — Dynamic lighting and atmosphere | Dynamic lights, flashlight shadows, fog volumes, 3D audio | Not started |
 | 5 — Living world | Animation, AI, weapons, inventory, saves: vertical slice | Not started |
@@ -42,14 +42,15 @@ Section 11 has the detail for each phase.
 | Scripting | Lua 5.4 via `mlua` (vendored), wrapped in `crates/script` (VM host in `lib.rs`, the Lua-facing API in `api.rs`). Entity classes are global tables in `assets/scripts/*.lua`, loaded at startup and hot-reloaded (instances keep state). Hooks `on_spawn` / `on_fire` / `on_use` / `on_enter` / `on_tick`; API `world.fire`, `world.fire_after`, `world.log`, `print`. Sandboxed (no io/os/files), with a per-call instruction budget. | `crates/script`, `crates/engine/src/world.rs`, `assets/scripts/` |
 | Entities | Flat `Entity` with optional model, collider, mover, trigger, usable, script; generational `EntityId`. The engine owns the `World`. Mover state machine in its own module. Named targets: triggers, buttons and scripts fire a name (queued, at most 64 per tick, with optional delay); movers with that name open or close, scripts get `on_fire`. Doors close after a wait or on fire, and back off instead of crushing. Brushes double as meshes (`Brush::mesh`, world-projected UVs). | `crates/engine/src/world.rs`, `entity.rs`, `mover.rs`, `collision.rs` |
 | Resources | Asset filesystem (`assets/` discovery), PNG decoding (all color types) to `base::Image`, meshes and textures addressed by generational handles | `crates/base`, `crates/render`, `crates/engine/src/gfx.rs` |
+| Maps | Quake BSP29/BSP2 reader with the BSPX brush list (`crates/bsp`, no engine types), converted to meters and Y-up (32 units/m) in `engine/src/map.rs`: per-texture meshes, solid brushes, `func_door` (with Quake's trigger field when untargeted), `func_button`, `trigger_once`/`_multiple`, `func_illusionary`, other brush entities, `info_player_start`, "script" keys. Textures by name from `assets/textures/`. Test map source in `maps/`, compiled with `tools/compile-map.sh` (qbsp `-wrbrushes -notex`, vis, light). | `crates/bsp`, `crates/engine/src/map.rs`, `maps/`, `tools/`, `assets/maps/` |
 | Hot reload | File watcher plus an asset registry. Shaders, textures, the palette and scripts reload; a bad file is rejected and the old version stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
 | Debugging | Logging (`RUST_LOG`), `verify!` asserts, F12 screenshot, `ENGINE_CAPTURE_FRAME=N` capture-and-exit | `crates/base`, `crates/engine/src/debug.rs` |
 | Errors | Typed `thiserror` errors per area; `EngineError` categories for games; `base::chain` for logs | `crates/*/src/error.rs` and per module |
-| Tests | 235 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
+| Tests | 270 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
 | CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows with the pinned toolchain. GPU tests run on all three (Linux via Mesa lavapipe); a skip would show as a run warning. | `.github/workflows/ci.yml` |
 | Build config | Toolchain pinned to 1.99.1, lints in `[workspace.lints]`, `publish = false`, dependency debug info reduced to line tables | `rust-toolchain.toml`, `Cargo.toml` |
 
-Not implemented yet, though the plan's sections describe them: maps, lightmaps, height and volumetric fog, script access to world state, crouching, moving platforms that carry the player, serialization (saves), audio.
+Not implemented yet, though the plan's sections describe them: lightmaps, map hot reload, height and volumetric fog, script access to world state, crouching, moving platforms that carry the player, serialization (saves), audio.
 
 ---
 
@@ -137,11 +138,12 @@ The diagram above is the target. The code maps it onto crates like this, and eac
 game ──► engine ──┬──► render ───► wgpu     (Renderer row)
                   ├──► physics ──► glam     (Physics/collision box)
                   ├──► script ───► mlua     (Scripting VM box)
+                  ├──► bsp ──────► glam     (map loading; Resources box)
                   └──► platform ─► winit    (Platform row)
 base: foundation utilities shared by all    (logging, asserts, Vfs, watcher)
 ```
 
-- The Engine core row lives in `crates/engine`. Today that is the loop, input, the asset registry, debug hooks, the world and entities, and the walker. Collision math (`crates/physics`) and the Lua host (`crates/script`) are their own crates beside `render` and `platform`. Audio and navigation will be added the same way.
+- The Engine core row lives in `crates/engine`. Today that is the loop, input, the asset registry, debug hooks, the world and entities, and the walker. Collision math (`crates/physics`), the Lua host (`crates/script`) and the Quake map reader (`crates/bsp`) are their own crates beside `render` and `platform`. Audio and navigation will be added the same way.
 - The Game layer is `game/`. It uses only the `engine` API.
 - The filesystem sits in `base::Vfs`, not in the platform layer.
 
@@ -170,7 +172,7 @@ base: foundation utilities shared by all    (logging, asserts, Vfs, watcher)
 6. Bake lightmaps (see Lighting).
 7. Write the result to **our own level format**: meshes, materials, collision brushes, entities, lightmaps, visibility.
 
-> Shortcut for early phases: compile with **ericw-tools** to Quake BSP and write a BSP loader. This gives a playable world quickly. Replace it with `mapc` in Phase 3, because BSP format limits (vertex precision, lightmap size, texture rules) would cap the "expand later" goal.
+> Shortcut for early phases: compile with **ericw-tools** to Quake BSP and write a BSP loader. This gives a playable world quickly. Replace it with `mapc` in Phase 3, because BSP format limits (vertex precision, lightmap size, texture rules) would cap the "expand later" goal. **In place** (Phase 1), with brushes read from ericw-tools' BSPX brush list rather than Quake's fixed hulls.
 
 ### Visibility
 - Phase 1: frustum culling only.
@@ -296,7 +298,7 @@ Found in review. Each is cheaper now than once Phase 1 builds on top of it.
 - ✅ Mipmaps as a config toggle (`Video::mipmaps`: off, nearest, linear). Default nearest, as Quake's software renderer did. Chains are built on the CPU at upload, averaged in linear light.
 - ✅ Distance fog (F0): `frame.fog`, linear / exp / exp², background in the fog color.
 - ✅ Retro post-pass: palette quantization and ordered dither (`frame.quantize`: off, nearest, dithered). Its own low-res pass (`post.wgsl`) rather than inside `blit.wgsl`, so captures and headless tests see it and the dither stays on low-res pixels. Default 256-color palette in `assets/palettes/default.png`.
-- Load a map: ericw-tools BSP loader as the shortcut. ericw-tools is built locally (see Status); a test map can come from TrenchBroom, ericw-tools' own `testmaps/`, or a generated `.map`. Commit the compiled `.bsp` so CI needs no tools. The loader should produce the engine's existing `Brush`es and `Entity`s, so collision, the walker and scripts work on maps unchanged.
+- ✅ Load a map: ericw-tools BSP loader as the shortcut. `crates/bsp` reads BSP29/BSP2 plus the BSPX BRUSHLIST (qbsp `-wrbrushes`), so the engine collides with the map's real brushes instead of Quake's three fixed hulls. `engine::Gfx::load_map` spawns the same `Brush`es and `Entity`s the sandbox uses, so collision, the walker, doors and scripts work on maps unchanged. Test map `maps/test.map` (three rooms, two doors, a button, triggers, stairs, a scripted trigger) is compiled with `tools/compile-map.sh` and committed as `assets/maps/test.bsp`; `cargo run -p game -- maps/test.bsp` plays it. Textures are `assets/textures/<name>.png` by name: qbsp `-notex -path assets` reads their sizes, and the .bsp holds no pixels. Not yet: button travel, linked doors, door spawnflags, map hot reload.
 - Baked lightmaps (L1). The vertex format already has `lightmap_uv`.
 - Add a reference-image test: capture a known view of a test map and compare it against a stored PNG.
 - **Milestone:** fly through a lit, fogged TrenchBroom level that looks like 1997.
@@ -305,11 +307,11 @@ Found in review. Each is cheaper now than once Phase 1 builds on top of it.
 Built against hand-placed brushes, since there is no map loader yet. A BSP or `mapc` loader will produce the same `Brush`es and `Entity`s.
 - ✅ Collision: box traces against convex brushes, slide, step-up, snap-down (`crates/physics`). Non-axial brush edges stop a box slightly early (no edge bevels), as in Quake.
 - ✅ Character controller with Arena and Survival profiles (`Walker`, `WalkSettings`). No crouch yet.
-- ✅ Entity system: flat struct with optional components (decided over a light ECS), in generational slots. Spawning from map entities waits for a map loader.
+- ✅ Entity system: flat struct with optional components (decided over a light ECS), in generational slots. Models and colliders are lists, since map brush entities are often several brushes and textures. ✅ Spawning from map entities (see Phase 1's map loader).
 - ✅ Doors, buttons, triggers via named targets.
 - 🟡 Lua integration begun (`mlua` approved 2026-10-25): entity classes with event hooks, firing names (now or delayed), logging, hot reload, sandbox, instruction budget. The sandbox's secret button is all Lua. Next: read access to world state and direct mover control from scripts; `WalkSettings` exposed to scripts for the Custom profile.
 - Follow-ups: moving platforms that carry the player (movers only block today); serializing `World` for saves (core principle 3; needs a serialization approach, e.g. serde, to be approved).
-- 🟡 **Milestone:** walk through a level, open doors, trigger events. Works in the sandbox level, with Lua driving its secret; not yet in a TrenchBroom level.
+- ✅ **Milestone:** walk through a level, open doors, trigger events. Works in the sandbox level and in a compiled Quake map (`maps/test.map`); a GPU test walks a walker up the map's stairs. Not yet tried with a TrenchBroom-authored map.
 
 ### Phase 3 — Own toolchain (3–5 weeks)
 - `mapc`: .map → own level format (CSG, collision, entities).
@@ -378,7 +380,7 @@ Check storefront rules: Steam requires disclosure of AI-generated content.
 |---|---|
 | Engine work crowds out game work | Hard milestones per phase. Reach the vertical slice before polish. |
 | Lighting complexity grows | Tiered lighting plan. Don't start L5+ before the vertical slice. |
-| Collision bugs (stuck in walls, falling through floors) | Brush-based convex collision, extensive debug drawing, automated "walk the level" tests. |
+| Collision bugs (stuck in walls, falling through floors) | Brush-based convex collision, extensive debug drawing, automated "walk the level" tests. (Started: walker tests on brushes, and on the compiled test map.) |
 | Survival-horror scope creep (inventory, puzzles, AI) | Keep gameplay in scripts. Prototype quickly, cut aggressively. |
 | macOS GPU quirks | Develop on Mac (primary OS) and test via CI on the others from day one. |
 | Asset bottleneck as the only artist | Strong low-res style guide. AI-assisted textures. Reuse assets in modular kits. |

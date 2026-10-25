@@ -5,6 +5,7 @@
 //! ```text
 //!   game ──► engine ──┬──► render ───► wgpu
 //!                     ├──► physics ──► (glam only)
+//!                     ├──► bsp ──────► (glam only; Quake map files)
 //!                     ├──► script ───► mlua (Lua 5.4)
 //!                     └──► platform ─► winit
 //!   (base: foundation utilities, usable by all)
@@ -20,8 +21,11 @@ mod fly;
 mod gfx;
 mod input;
 mod look;
+mod map;
 mod mover;
 mod sim;
+#[cfg(test)]
+mod test_util;
 mod walk;
 mod world;
 
@@ -37,6 +41,7 @@ pub use gfx::{
 pub use glam as math;
 pub use input::{CursorMode, Input};
 pub use look::{LookSettings, MouseLook};
+pub use map::{MapInfo, PlayerStart, UNITS_PER_METER};
 pub use sim::Tick;
 pub use walk::{HeadBob, Sprint, WalkSettings, Walker};
 pub use world::{EntityId, USE_REACH, World};

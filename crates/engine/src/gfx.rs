@@ -8,6 +8,8 @@ use render::{Draw, Renderer};
 
 use crate::assets::{self, Asset, Registry};
 use crate::error::EngineError;
+use crate::map::{self, MapInfo};
+use crate::world::World;
 
 /// Near clip plane, meters. Small enough for a held weapon model.
 pub(crate) const DEFAULT_NEAR: f32 = 0.05;
@@ -268,8 +270,12 @@ pub struct Gfx<'a> {
 
 impl Gfx<'_> {
     /// Loads a PNG from the asset directory, e.g. "textures/crate.png",
-    /// and watches it: saving the file updates the texture live.
+    /// and watches it: saving the file updates the texture live. Loading
+    /// a path again returns the same texture.
     pub fn load_texture(&mut self, path: &str) -> Result<TextureHandle, EngineError> {
+        if let Some(Asset::Texture(id)) = self.registry.lookup(path) {
+            return Ok(TextureHandle(id));
+        }
         let load_err = load_error(path);
 
         let image = assets::load_image(self.vfs, path).map_err(load_err)?;
@@ -298,6 +304,13 @@ impl Gfx<'_> {
         self.registry.register(path, Asset::Palette);
 
         Ok(())
+    }
+
+    /// Loads a Quake map, e.g. "maps/test.bsp" (compiled by ericw-tools
+    /// with `qbsp -wrbrushes`), and spawns its geometry and entities into
+    /// `world`. Map textures load from `textures/<name>.png`.
+    pub fn load_map(&mut self, path: &str, world: &mut World) -> Result<MapInfo, EngineError> {
+        map::load(self, world, path)
     }
 
     /// Uploads an in-memory image, e.g. a generated pattern. Not watched.
@@ -397,6 +410,7 @@ impl Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::{headless, repo_assets};
 
     #[test]
     fn vertex_converts_field_for_field() {
@@ -516,15 +530,6 @@ mod tests {
 
     const PALETTE: &str = "palettes/default.png";
 
-    fn repo_assets() -> Vfs {
-        Vfs::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets")).unwrap()
-    }
-
-    fn headless(vfs: &Vfs) -> Option<render::test_support::GpuTest> {
-        let source = |shader| vfs.read_text(crate::assets::shader_path(shader));
-        render::test_support::headless_or_skip(Default::default(), source)
-    }
-
     #[test]
     fn load_texture_watches_path_until_destroyed() {
         let vfs = repo_assets();
@@ -568,6 +573,24 @@ mod tests {
         let err = gfx.load_palette("textures/crate.png").unwrap_err();
         assert!(matches!(&err, EngineError::Load { path, .. } if path == "textures/crate.png"));
         assert_eq!(gfx.registry.lookup(PALETTE), Some(Asset::Palette));
+    }
+
+    #[test]
+    fn loading_a_path_twice_returns_the_same_texture() {
+        let vfs = repo_assets();
+        let Some(mut renderer) = headless(&vfs) else {
+            return;
+        };
+        let mut registry = Registry::with_shaders();
+        let mut gfx = Gfx {
+            renderer: &mut renderer,
+            vfs: &vfs,
+            registry: &mut registry,
+        };
+
+        let first = gfx.load_texture("textures/crate.png").unwrap();
+        let again = gfx.load_texture("textures/crate.png").unwrap();
+        assert_eq!(first, again);
     }
 
     #[test]
