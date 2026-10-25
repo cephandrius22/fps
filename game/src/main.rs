@@ -1,27 +1,33 @@
-//! Sandbox: fly around a tiled floor with textured crates and a spinning
-//! colored cube, in fog, at 640×360 upscaled.
+//! Sandbox: walk (or fly) around a brush-built test level with stairs,
+//! ramps, crates and a room behind a sliding door, in fog, at 640×360
+//! upscaled.
 //!
-//! Click to capture the mouse; Esc releases it, Esc again quits. F1
-//! toggles fog, F2 cycles palette quantization. Edit assets/shaders/*.wgsl,
-//! assets/textures/*.png or assets/palettes/*.png while running to see
-//! them reload.
+//! Bindings owned here (walking comes from `Walker`, flying from
+//! `FlyCamera`, F12 screenshots from the engine; README.md lists them
+//! all):
+//!
+//! ```text
+//! left click   mouse free: capture it for mouse look
+//! Esc          mouse captured: free it; mouse free: quit
+//! E            use what is in front of you, within 2 m (the button)
+//! F1           fog on / off (starts on)
+//! F2           palette: dithered (start) → off → nearest → dithered
+//! F3           walk ↔ fly; back to walking only where the body fits
+//! F4           movement profile: survival (start) ↔ arena
+//! ```
+//!
+//! Edit assets/shaders/*.wgsl, assets/textures/*.png or
+//! assets/palettes/*.png while running to see them reload.
 
+mod level;
 mod shapes;
 
 use engine::math::{Mat4, Quat, Vec3};
 use engine::{
-    BoxError, Button, Config, CursorMode, Falloff, FlyCamera, Fog, Frame, Game, Gfx, Key,
-    MeshHandle, MouseLook, Quantize, TextureHandle, Tick,
+    BoxError, Button, Camera, Config, CursorMode, Falloff, FlyCamera, Fog, Frame, Game, Gfx, Key,
+    MeshHandle, MouseLook, Quantize, Tick, WalkSettings, Walker, World,
 };
 use shapes::Tint;
-
-const FLOOR_SIZE: f32 = 40.0;
-/// One floor texture repeat per 2 m: 16 px tiles read as 50 cm stones.
-const FLOOR_TILES: f32 = FLOOR_SIZE / 2.0;
-
-/// Start above and behind the scene, tilted down a little.
-const START: Vec3 = Vec3::new(0.0, 2.0, 8.0);
-const START_PITCH: f32 = -0.15;
 
 /// Radians per second.
 const SPIN_SPEED: f32 = 1.2;
@@ -34,30 +40,78 @@ const MIST: Fog = Fog {
     color: [0.10, 0.11, 0.13],
     falloff: Falloff::Exp2 { density: 0.08 },
 };
+const CAPTURE_BUTTON: Button = Button::Left;
+const RELEASE_KEY: Key = Key::Escape;
+const USE_KEY: Key = Key::E;
 const FOG_KEY: Key = Key::F1;
 const QUANTIZE_KEY: Key = Key::F2;
+const MOVEMENT_KEY: Key = Key::F3;
+const PROFILE_KEY: Key = Key::F4;
 
-/// Crate positions (bottom-center on the floor) and yaw, radians.
-const CRATES: [(Vec3, f32); 5] = [
-    (Vec3::new(-3.0, 0.0, -2.0), 0.0),
-    (Vec3::new(-3.0, 1.0, -2.0), 0.4),
-    (Vec3::new(-1.8, 0.0, -2.3), 0.1),
-    (Vec3::new(3.0, 0.0, 1.0), 0.8),
-    (Vec3::new(2.0, 0.0, -5.0), 0.3),
-];
+/// Ready-made walking feel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Profile {
+    Survival,
+    Arena,
+}
+
+impl Profile {
+    fn settings(self) -> WalkSettings {
+        match self {
+            Profile::Survival => WalkSettings::survival(),
+            Profile::Arena => WalkSettings::arena(),
+        }
+    }
+
+    fn other(self) -> Profile {
+        match self {
+            Profile::Survival => Profile::Arena,
+            Profile::Arena => Profile::Survival,
+        }
+    }
+}
+
+/// How the player gets around.
+enum Movement {
+    /// With collision and gravity.
+    Walk(Walker),
+    /// Noclip: through walls, no gravity, sets off no triggers.
+    Fly(FlyCamera),
+}
+
+impl Movement {
+    fn eye(&self) -> Vec3 {
+        match self {
+            Movement::Walk(walker) => walker.eye(),
+            Movement::Fly(fly) => fly.position(),
+        }
+    }
+
+    fn forward(&self) -> Vec3 {
+        match self {
+            Movement::Walk(walker) => walker.forward(),
+            Movement::Fly(fly) => fly.forward(),
+        }
+    }
+
+    fn camera(&self, alpha: f32) -> Camera {
+        match self {
+            Movement::Walk(walker) => walker.camera(alpha),
+            Movement::Fly(fly) => fly.camera(alpha),
+        }
+    }
+}
 
 /// Resources created in `init`.
-struct Assets {
+struct Scene {
+    world: World,
     cube: MeshHandle,
-    crate_mesh: MeshHandle,
-    floor: MeshHandle,
-    crate_texture: TextureHandle,
-    floor_texture: TextureHandle,
 }
 
 struct Sandbox {
-    assets: Option<Assets>,
-    camera: FlyCamera,
+    scene: Option<Scene>,
+    movement: Movement,
+    profile: Profile,
     fog: Option<Fog>,
     quantize: Quantize,
     /// Spin angle at the previous and current tick, for interpolation.
@@ -67,9 +121,12 @@ struct Sandbox {
 
 impl Sandbox {
     fn new() -> Self {
+        let profile = Profile::Survival;
+
         Self {
-            assets: None,
-            camera: FlyCamera::new(START, 0.0, START_PITCH),
+            scene: None,
+            movement: Movement::Walk(Walker::new(level::SPAWN, 0.0, 0.0, profile.settings())),
+            profile,
             fog: Some(MIST),
             quantize: Quantize::Dithered,
             prev_angle: 0.0,
@@ -81,11 +138,11 @@ impl Sandbox {
     fn handle_cursor(tick: &mut Tick) {
         let captured = tick.cursor() == CursorMode::Captured;
 
-        if !captured && tick.input.button_pressed(Button::Left) {
+        if !captured && tick.input.button_pressed(CAPTURE_BUTTON) {
             tick.set_cursor(CursorMode::Captured);
         }
 
-        if !tick.input.was_pressed(Key::Escape) {
+        if !tick.input.was_pressed(RELEASE_KEY) {
             return;
         }
         if captured {
@@ -96,6 +153,7 @@ impl Sandbox {
     }
 
     /// F1: fog on/off. F2: palette off → nearest → dithered → off.
+    /// Both act once per press, on the tick it lands.
     fn handle_look_keys(&mut self, tick: &Tick) {
         if tick.input.was_pressed(FOG_KEY) {
             self.fog = match self.fog {
@@ -108,6 +166,39 @@ impl Sandbox {
             self.quantize = next_quantize(self.quantize);
         }
     }
+
+    /// F3: walk ↔ fly. F4: survival ↔ arena (applies when walking, and
+    /// to the next walk after flying).
+    fn handle_movement_keys(&mut self, tick: &Tick, world: &World) {
+        if tick.input.was_pressed(PROFILE_KEY) {
+            self.profile = self.profile.other();
+            if let Movement::Walk(walker) = &mut self.movement {
+                walker.settings = self.profile.settings();
+            }
+        }
+
+        if !tick.input.was_pressed(MOVEMENT_KEY) {
+            return;
+        }
+        self.movement = match &self.movement {
+            Movement::Walk(walker) => {
+                Movement::Fly(FlyCamera::new(walker.eye(), walker.yaw(), walker.pitch()))
+            }
+            Movement::Fly(fly) => match land(fly, self.profile.settings(), world) {
+                Some(walker) => Movement::Walk(walker),
+                None => return,
+            },
+        };
+    }
+}
+
+/// A walker whose eyes are where the flying camera is, if its body fits
+/// there.
+fn land(fly: &FlyCamera, settings: WalkSettings, world: &World) -> Option<Walker> {
+    let feet = fly.position() - Vec3::Y * settings.eye_height;
+    let walker = Walker::new(feet, fly.yaw(), fly.pitch(), settings);
+
+    world.is_clear(walker.bounds()).then_some(walker)
 }
 
 fn next_quantize(quantize: Quantize) -> Quantize {
@@ -120,51 +211,68 @@ fn next_quantize(quantize: Quantize) -> Quantize {
 
 impl Game for Sandbox {
     fn init(&mut self, gfx: &mut Gfx) -> Result<(), BoxError> {
-        self.assets = Some(Assets {
-            cube: gfx.create_mesh(&shapes::cube(Tint::PerFace)),
-            crate_mesh: gfx.create_mesh(&shapes::cube(Tint::White)),
-            floor: gfx.create_mesh(&shapes::floor(FLOOR_SIZE, FLOOR_TILES)),
-            crate_texture: gfx.load_texture("textures/crate.png")?,
-            floor_texture: gfx.load_texture("textures/floor.png")?,
-        });
+        let textures = level::Textures {
+            stone: gfx.load_texture("textures/floor.png")?,
+            wood: gfx.load_texture("textures/crate.png")?,
+        };
         gfx.load_palette("palettes/default.png")?;
+
+        self.scene = Some(Scene {
+            world: level::build(gfx, &textures),
+            cube: gfx.create_mesh(&shapes::cube(Tint::PerFace)),
+        });
         Ok(())
     }
 
     fn tick(&mut self, tick: &mut Tick) {
-        Self::handle_cursor(tick);
-        self.handle_look_keys(tick);
-
-        let look = match tick.cursor() {
-            CursorMode::Captured => MouseLook::Enabled,
-            CursorMode::Free => MouseLook::Disabled,
-        };
-        self.camera.update(tick.input, look, tick.dt);
-
-        self.prev_angle = self.angle;
-        self.angle += SPIN_SPEED * tick.dt;
-    }
-
-    fn draw(&mut self, frame: &mut Frame) {
-        let Some(assets) = &self.assets else {
+        let Some(mut scene) = self.scene.take() else {
             return;
         };
 
-        frame.camera = self.camera.camera(frame.alpha);
+        Self::handle_cursor(tick);
+        self.handle_look_keys(tick);
+        self.handle_movement_keys(tick, &scene.world);
+
+        let mouse = match tick.cursor() {
+            CursorMode::Captured => MouseLook::Enabled,
+            CursorMode::Free => MouseLook::Disabled,
+        };
+        let player = match &mut self.movement {
+            Movement::Walk(walker) => {
+                walker.update(tick.input, mouse, &scene.world, tick.dt);
+                Some(walker.bounds())
+            }
+            Movement::Fly(fly) => {
+                fly.update(tick.input, mouse, tick.dt);
+                None
+            }
+        };
+
+        scene.world.tick(tick.dt, player);
+        if tick.input.was_pressed(USE_KEY) {
+            scene
+                .world
+                .use_from(self.movement.eye(), self.movement.forward());
+        }
+
+        self.prev_angle = self.angle;
+        self.angle += SPIN_SPEED * tick.dt;
+        self.scene = Some(scene);
+    }
+
+    fn draw(&mut self, frame: &mut Frame) {
+        let Some(scene) = &self.scene else {
+            return;
+        };
+
+        frame.camera = self.movement.camera(frame.alpha);
         frame.fog = self.fog;
         frame.quantize = self.quantize;
-        frame.draw_textured(assets.floor, assets.floor_texture, Mat4::IDENTITY);
-
-        for (base, yaw) in CRATES {
-            // Cube is centered; lift by half its height to sit on `base`.
-            let center = base + Vec3::Y * 0.5;
-            let model = Mat4::from_rotation_translation(Quat::from_rotation_y(yaw), center);
-            frame.draw_textured(assets.crate_mesh, assets.crate_texture, model);
-        }
+        scene.world.draw(frame, frame.alpha);
 
         let angle = self.prev_angle + (self.angle - self.prev_angle) * frame.alpha;
         let spin = Quat::from_axis_angle(SPIN_AXIS.normalize(), angle);
-        frame.draw_mesh(assets.cube, Mat4::from_rotation_translation(spin, SPIN_AT));
+        frame.draw_mesh(scene.cube, Mat4::from_rotation_translation(spin, SPIN_AT));
     }
 }
 
@@ -181,6 +289,8 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use engine::Brush;
+
     use super::*;
 
     #[test]
@@ -194,5 +304,30 @@ mod tests {
         }
 
         assert_eq!(seen, [Quantize::Nearest, Quantize::Dithered, Quantize::Off]);
+    }
+
+    #[test]
+    fn profiles_alternate_and_differ() {
+        assert_eq!(Profile::Survival.other(), Profile::Arena);
+        assert_eq!(Profile::Arena.other(), Profile::Survival);
+        assert_ne!(Profile::Survival.settings(), Profile::Arena.settings());
+    }
+
+    #[test]
+    fn landing_needs_room_for_the_body() {
+        let mut world = World::new();
+        world.add_brush(Brush::cuboid(
+            Vec3::new(-1.0, 0.0, -1.0),
+            Vec3::new(1.0, 3.0, 1.0),
+        ));
+        let settings = WalkSettings::survival();
+
+        let inside = FlyCamera::new(Vec3::new(0.0, 1.6, 0.0), 0.0, 0.0);
+        assert!(land(&inside, settings, &world).is_none());
+
+        let open = FlyCamera::new(Vec3::new(5.0, 1.6, 0.0), 0.3, -0.2);
+        let walker = land(&open, settings, &world).unwrap();
+        assert!((walker.eye() - open.position()).length() < 0.05);
+        assert_eq!((walker.yaw(), walker.pitch()), (0.3, -0.2));
     }
 }

@@ -4,9 +4,9 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 
 ---
 
-## Status (2026-10-24)
+## Status (2026-10-25)
 
-**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phases 0 and 0.5 are done** and CI is green on all three OSes. **Phase 1 is in progress**: the fly camera, textured meshes, mipmaps, distance fog and the palette/dither pass are done. The rest needs a map, which needs ericw-tools. See [README.md](README.md) for how the code is organized and how to build it.
+**Stack:** Rust (2024 edition) + wgpu 30 + winit 0.30. **Phases 0 and 0.5 are done** and CI is green on all three OSes. **Phase 1** has everything except what needs a map (which needs ericw-tools). **Phase 2 is in progress**: brush collision, the Arena and Survival walker, entities, and doors, buttons and triggers work in a brush-built sandbox level. Lua and spawning from map entities remain. See [README.md](README.md) for how the code is organized and how to build it.
 
 ### Roadmap
 
@@ -15,7 +15,7 @@ A from-scratch first-person game engine with a Quake / Half-Life-era look, built
 | 0 — Foundations | Window, loop, GPU, low-res cube | ✅ Done |
 | 0.5 — Follow-ups | Code-health items found in review | ✅ Done (optional renames skipped) |
 | 1 — First world | Fly through a lit, fogged BSP level | 🟡 In progress: 5 of 8 items done |
-| 2 — Walking around | Collision, character controller, entities, Lua | Not started |
+| 2 — Walking around | Collision, character controller, entities, Lua | 🟡 In progress: 3 of 4 items done; Lua and map spawning left |
 | 3 — Own toolchain | `mapc`, lightmap baker, glTF props | Not started |
 | 4 — Dynamic lighting and atmosphere | Dynamic lights, flashlight shadows, fog volumes, 3D audio | Not started |
 | 5 — Living world | Animation, AI, weapons, inventory, saves: vertical slice | Not started |
@@ -34,16 +34,19 @@ Section 11 has the detail for each phase.
 | Fog | F0: distance fog per frame (linear, exp, exp²), radial distance, background drawn in the fog color | `assets/shaders/mesh.wgsl`, `engine::Fog` |
 | Retro post-pass | Low-res pass after lighting: nearest-color palette quantization (up to 256 colors from a PNG, hot-reloadable) with optional 4×4 Bayer dither; byte-exact palette output | `assets/shaders/post.wgsl`, `crates/render/src/passes/post.rs`, `assets/palettes/` |
 | Engine core | Main loop, per-tick input state, cursor mode requests, `Game` trait (`init` / `tick` / `draw` with interpolation), engine-owned public types | `crates/engine` |
-| Camera | `FlyCamera`: WASD + Space/Ctrl, Shift for speed, mouse or arrow-key look, pitch clamp, per-frame interpolation | `crates/engine/src/fly.rs` |
+| Camera | `FlyCamera`: WASD + Space/Ctrl, Shift for speed, mouse or arrow-key look, pitch clamp, per-frame interpolation. Look shared with the walker. | `crates/engine/src/fly.rs`, `look.rs` |
+| Collision | Convex brushes (cuboids, turned boxes, any closed plane set) with axial bevels; axis-aligned box and ray traces; slide, step-up, ground probe, snap-down. Moving bodies slide by offset. | `crates/physics` |
+| Character controller | `Walker`: Quake friction / acceleration / capped air control, jumping, 45 cm steps, slopes up to ~45°. Profiles `WalkSettings::arena()` (fast, air control) and `survival()` (slow, sprint with stamina, head bob); all fields public for custom ones. | `crates/engine/src/walk.rs` |
+| Entities | Flat `Entity` with optional model, collider, mover, trigger, usable; generational `EntityId`. Named targets: triggers and buttons fire a name, movers with that name open or close. Doors close after a wait or on fire, and back off instead of crushing. Brushes double as meshes (`Brush::mesh`, world-projected UVs). | `crates/engine/src/world.rs`, `entity.rs`, `collision.rs` |
 | Resources | Asset filesystem (`assets/` discovery), PNG decoding (all color types) to `base::Image`, meshes and textures addressed by generational handles | `crates/base`, `crates/render`, `crates/engine/src/gfx.rs` |
 | Hot reload | File watcher plus an asset registry. Shaders and textures reload; a bad file is rejected and the old version stays. | `crates/base/src/watch.rs`, `crates/engine/src/assets.rs` |
 | Debugging | Logging (`RUST_LOG`), `verify!` asserts, F12 screenshot, `ENGINE_CAPTURE_FRAME=N` capture-and-exit | `crates/base`, `crates/engine/src/debug.rs` |
 | Errors | Typed `thiserror` errors per area; `EngineError` categories for games; `base::chain` for logs | `crates/*/src/error.rs` and per module |
-| Tests | 145 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
+| Tests | 209 tests: unit tests per crate, headless GPU pixel tests (shared skip policy in `render::test_support`), naga shader validation | `cargo test` |
 | CI | fmt, clippy `-D warnings`, tests on macOS/Linux/Windows with the pinned toolchain. GPU tests run on all three (Linux via Mesa lavapipe); a skip would show as a run warning. | `.github/workflows/ci.yml` |
 | Build config | Toolchain pinned to 1.99.1, lints in `[workspace.lints]`, `publish = false`, dependency debug info reduced to line tables | `rust-toolchain.toml`, `Cargo.toml` |
 
-Not implemented yet, though the plan's sections describe them: maps, lightmaps, height and volumetric fog, collision, entities, scripting, audio.
+Not implemented yet, though the plan's sections describe them: maps, lightmaps, height and volumetric fog, scripting, crouching, moving platforms that carry the player, serialization (saves), audio.
 
 ---
 
@@ -129,11 +132,12 @@ The diagram above is the target. The code maps it onto crates like this, and eac
 
 ```
 game ──► engine ──┬──► render ───► wgpu     (Renderer row)
+                  ├──► physics ──► glam     (Physics/collision box)
                   └──► platform ─► winit    (Platform row)
 base: foundation utilities shared by all    (logging, asserts, Vfs, watcher)
 ```
 
-- The Engine core row lives in `crates/engine`. Today that is the loop, input, the asset registry and debug hooks. Physics, audio, entities, scripting and navigation will be added there or as new crates beside `render` and `platform`.
+- The Engine core row lives in `crates/engine`. Today that is the loop, input, the asset registry, debug hooks, the world and entities, and the walker. Collision math is its own crate, `crates/physics`, beside `render` and `platform`. Audio, scripting and navigation will be added there or as new crates beside them.
 - The Game layer is `game/`. It uses only the `engine` API.
 - The filesystem sits in `base::Vfs`, not in the platform layer.
 
@@ -293,12 +297,14 @@ Found in review. Each is cheaper now than once Phase 1 builds on top of it.
 - Add a reference-image test: capture a known view of a test map and compare it against a stored PNG.
 - **Milestone:** fly through a lit, fogged TrenchBroom level that looks like 1997.
 
-### Phase 2 — Walking around (2–4 weeks)
-- Collision: traces against brush hulls, slide, step-up.
-- Character controller with Arena and Survival profiles.
-- Entity system plus spawning from map entities.
-- Doors, buttons, triggers. Begin the Lua integration.
-- **Milestone:** walk through a level, open doors, trigger events.
+### Phase 2 — Walking around (2–4 weeks) — in progress
+Built against hand-placed brushes, since there is no map loader yet. A BSP or `mapc` loader will produce the same `Brush`es and `Entity`s.
+- ✅ Collision: box traces against convex brushes, slide, step-up, snap-down (`crates/physics`). Non-axial brush edges stop a box slightly early (no edge bevels), as in Quake.
+- ✅ Character controller with Arena and Survival profiles (`Walker`, `WalkSettings`). No crouch yet.
+- ✅ Entity system: flat struct with optional components (decided over a light ECS), in generational slots. Spawning from map entities waits for a map loader.
+- ✅ Doors, buttons, triggers via named targets. 🟡 Lua deferred (needs the `mlua` crate; to be approved). Rust behavior sits behind `World::fire(name)`, which scripts can drive later.
+- Follow-ups: moving platforms that carry the player (movers only block today); serializing `World` for saves (core principle 3; needs a serialization approach, e.g. serde, to be approved).
+- 🟡 **Milestone:** walk through a level, open doors, trigger events. Works in the sandbox level; not yet in a TrenchBroom level.
 
 ### Phase 3 — Own toolchain (3–5 weeks)
 - `mapc`: .map → own level format (CSG, collision, entities).
@@ -380,7 +386,7 @@ Check storefront rules: Steam requires disclosure of AI-generated content.
 - [ ] Audio library: cpal plus our own mixer, or kira. Needed by Phase 4.
 - [ ] Scripting binding: mlua (Lua 5.4 or LuaJIT). Needed by Phase 2.
 - [ ] Navigation: Recast bindings or a Rust port. Needed by Phase 5.
-- [ ] Entity model: light ECS or flat struct with optional components.
+- [x] Entity model: **flat struct with optional components** (decided 2026-10-25).
 - [ ] Gameplay direction: action FPS, survival horror, or a hybrid. This can wait until Phase 5.
 - [ ] Save model: save rooms, checkpoints, or save anywhere.
 - [ ] How far to push the retro look: strict 256-color palette, or a "retro-inspired" look with modern lighting. Both are now runtime settings (`frame.quantize`), so this can be decided by eye.

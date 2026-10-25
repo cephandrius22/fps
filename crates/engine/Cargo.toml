@@ -9,6 +9,7 @@ publish.workspace = true
 base.workspace = true
 glam.workspace = true
 log.workspace = true
+physics.workspace = true
 platform.workspace = true
 render.workspace = true
 thiserror.workspace = true

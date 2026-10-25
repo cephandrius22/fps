@@ -4,11 +4,13 @@ A from-scratch first-person engine in Rust with a Quake / Half-Life-era look:
 low internal resolution, chunky nearest-neighbor pixels, a hand-written
 renderer. The look is a setting, not a limit, so the engine can grow past it.
 
-**Status:** Phase 1 (first world) of
-[retro-fps-engine-plan.md](retro-fps-engine-plan.md), in progress. The
-sandbox is a fly-through scene: a tiled stone floor, textured crates and a
-spinning cube in distance fog, rendered at 640×360, quantized to a
-256-color palette with ordered dithering, and upscaled to the window.
+**Status:** Phase 2 (walking around) of
+[retro-fps-engine-plan.md](retro-fps-engine-plan.md) has its core:
+brush collision, a character controller and entities. The sandbox is a
+small brush-built level you walk through: stairs, a walkable and a
+too-steep ramp, crates, and a room behind a sliding door opened by a
+button. It runs in distance fog at 640×360, quantized to a 256-color
+palette with ordered dithering, and upscaled to the window.
 
 ## Quick start
 
@@ -21,17 +23,42 @@ system libraries on macOS or Windows. On Linux, install
 cargo run -p game
 ```
 
-| Input | Action |
-|---|---|
-| Left click | Capture the mouse for mouse look |
-| Mouse / arrow keys | Look around |
-| W A S D | Fly forward, left, back, right |
-| Space / Left Ctrl | Fly up / down |
-| Left Shift | Fly faster |
-| Esc | Release the mouse; if already released, quit |
-| F1 | Fog on / off |
-| F2 | Palette: off → nearest → dithered |
-| F12 | Save a screenshot to `screenshots/<timestamp>.png` |
+Bindings are physical key positions (WASD stays put on AZERTY). Only the
+left-hand Shift and Ctrl are bound. You start walking, in the Survival
+profile. Opposite keys cancel, and diagonals are never faster than
+straight moves.
+
+| Input | When | What it does |
+|---|---|---|
+| Left click | Mouse free | Captures the mouse: hides the cursor and turns mouse motion into looking. Does nothing while captured. |
+| Mouse motion | Mouse captured | Right/left turns right/left, down/up looks down/up. Ignored while the mouse is free. |
+| ← → | Always | Turn left / right at about 115°/s (2 rad/s) |
+| ↑ ↓ | Always | Look up / down at the same rate. Looking up or down stops 1° short of vertical. |
+| W / S | Walking | Walk forward / back, level whatever the view tilt. Top speed 3 m/s (Survival) or 8 m/s (Arena). |
+| A / D | Walking | Strafe left / right, same speeds |
+| Space | Walking | Jump, only from the ground, once per press (holding does not repeat). About 0.6 m high (Survival) or 1.2 m (Arena). |
+| Left Shift | Walking, Survival | Sprint at 1.8× (5.4 m/s) while moving on the ground. A full bar lasts 5 s and refills in 8 s when not sprinting; once empty, no sprint until it is a quarter full. No effect in Arena. |
+| Left Ctrl | Walking | Nothing (no crouch yet) |
+| W / S | Flying | Fly forward / back along the view direction, including its tilt: looking down and pressing W descends. 5 m/s. |
+| A / D | Flying | Strafe left / right, level with the ground. 5 m/s. |
+| Space / Left Ctrl | Flying | Fly straight up / down, whatever the view direction. 5 m/s. |
+| Left Shift | Flying | All flying 4× faster (20 m/s) |
+| E | Always | Use: fires whatever usable thing is under the screen center within 2 m. Here that is the red button beside the door, which opens it. Works while flying too. |
+| Esc | Mouse captured | Frees the mouse |
+| Esc | Mouse free | Quits |
+| F1 | Always | Toggles fog. Starts on: gray-blue mist (exp², density 0.08). |
+| F2 | Always | Cycles palette quantization: dithered (the start) → off → nearest → dithered |
+| F3 | Always | Walking ↔ flying. Flying passes through walls, has no gravity, and sets off no triggers. Back to walking puts your feet 1.6 m below the camera, keeping your view; if your body would be inside something there, nothing happens. |
+| F4 | Always | Movement profile: Survival (the start) ↔ Arena. Applies at once while walking; while flying, it applies when you land. |
+| F12 | Always | Saves the 640×360 frame, after the palette pass, to `screenshots/<ms since 1970>.png` under the working directory. Not window size. Engine-wide: works in any game. |
+
+Switching away from the window frees the mouse; click to capture it again.
+
+In the level: the door slides open into the wall when you press the
+button, and closes 3 s after opening fully. It never closes on you; it
+backs off. Walking into the room's front strip (just inside the door)
+opens it again from inside. Steps up to 45 cm climb on their own;
+slopes steeper than about 45° are walls.
 
 While it runs, edit `assets/shaders/*.wgsl`, `assets/textures/*.png` or
 `assets/palettes/*.png` and save. The file reloads live. A broken file logs its error and the last good
@@ -54,8 +81,10 @@ crates/
   base/            foundation: logging, verify!, Key/Button, Slots, Vfs, Watcher, Image/PNG
   platform/        OS layer: window, cursor capture, OS events, fixed-timestep clock (wraps winit)
   render/          renderer: low-res targets, meshes, textures, fog, palette pass, readback (wraps wgpu)
-  engine/          main loop, fly camera, asset loading + the API games are written against
-game/              the game layer; today a fly-through sandbox
+  physics/         collision: convex brushes, box traces, slide / step / ground moves (glam only)
+  engine/          main loop, world + entities, walker and fly camera, asset loading:
+                   the API games are written against
+game/              the game layer; today a walk-through sandbox level (game/src/level.rs)
 ```
 
 ## Architecture
@@ -65,29 +94,33 @@ game/              the game layer; today a fly-through sandbox
             │ game        your code: impl Game   │
             └─────────────────┬──────────────────┘
                               ▼
-            ┌────────────────────────────────────┐
-            │ engine      loop, input state,     │
-            │             assets, public types   │
-            └────────┬──────────────────┬────────┘
-                     ▼                  ▼
-            ┌────────────────┐ ┌─────────────────┐
-            │ render (wgpu)  │ │ platform (winit)│
-            └────────────────┘ └─────────────────┘
+            ┌────────────────────────────────────────────┐
+            │ engine      loop, input, world, entities,  │
+            │             walker, assets, public types   │
+            └──────┬───────────────┬──────────────┬──────┘
+                   ▼               ▼              ▼
+            ┌─────────────┐ ┌─────────────┐ ┌──────────────┐
+            │render (wgpu)│ │physics      │ │platform      │
+            │             │ │(brushes)    │ │(winit)       │
+            └─────────────┘ └─────────────┘ └──────────────┘
    base ── foundation utilities, usable by every layer
 ```
 
 Dependency rules:
 
 - A layer talks only to the layer directly below it. `game` sees only
-  `engine`. `render` and `platform` are siblings and never depend on each
-  other: the renderer takes any raw window handle, not a `platform::Window`.
+  `engine`. `render`, `physics` and `platform` are siblings and never
+  depend on each other: the renderer takes any raw window handle, not a
+  `platform::Window`.
 - Library types stop at their wrapper. winit never leaves `platform` and
   wgpu never leaves `render`.
 - Lower-layer types stop at `engine`. Games use `engine::Camera`,
   `engine::MeshData`, `engine::MeshHandle`, `engine::TextureHandle`,
-  `engine::Fog`, `engine::Quantize` and `engine::CursorMode`. `engine/src/gfx.rs` is the
-  only place they are converted to `render` types, so render internals can
-  change without breaking games.
+  `engine::Fog`, `engine::Quantize`, `engine::Brush`, `engine::Trace`
+  and `engine::CursorMode`. `engine/src/gfx.rs` is the only place they are
+  converted to `render` types, and `engine/src/collision.rs` the only
+  place for `physics` types, so lower-layer internals can change without
+  breaking games.
 - `base` has no knowledge of windows, GPUs or game rules. Shared vocabulary
   (`Key`, `Button`) lives there because two layers need it.
 - `render` does no file I/O. The engine hands it shader source.
@@ -103,7 +136,10 @@ engine App::frame
                   (shader: recompile; texture, palette: decode, replace in place)
   2. simulate     FixedStep::advance → N ticks → Game::tick(Tick { input, dt })
                   (input edges cleared after each tick; cursor requests applied after)
-  3. describe     Game::draw(Frame { camera, alpha, fog, quantize }) → draw_mesh / draw_textured
+                  sandbox tick: walker.update(&world) → world.tick(dt, player box)
+                                → E: world.use_from(eye, forward)
+  3. describe     Game::draw(Frame { camera, alpha, fog, quantize }) → world.draw(frame)
+                  (every entity model, interpolated) + draw_mesh / draw_textured
   4. render       MeshPass (lit, fogged) → 640×360 scene
                   → PostPass (palette, dither) → 640×360 output
                   → BlitPass (nearest, letterbox) → window
@@ -148,6 +184,29 @@ engine App::frame
   turns mid-gray, not dark. Draws without a texture use a 1×1 white one,
   so the shader has no untextured special case. Fragment color = texture ×
   vertex color × light, then fog.
+- **Brushes.** A level is convex `Brush`es (cuboids, turned boxes, or
+  any closed set of planes, such as ramps). The same brush is what
+  collides and, through `brush.mesh(meters_per_texture)`, what is drawn,
+  so they never disagree. Textures are projected along the nearest world
+  axis, Quake-style, so neighboring brushes line up. A map loader will
+  produce the same brushes later.
+- **Collision.** `physics` sweeps an axis-aligned box through the
+  brushes (`World::trace`) and builds moves from that: slide along what
+  is hit, step up ledges, find the floor, snap down stairs. That is
+  Quake's movement code in shape. Moving bodies (doors) slide by an
+  offset; nothing rotates after spawning.
+- **Walker.** `engine::Walker` is the character controller: one box
+  with Quake's friction, acceleration and capped air control (so
+  strafe-jumping works). `WalkSettings::arena()` and `survival()` are
+  profiles. Every field is public, so a custom profile is a struct
+  update. Survival adds sprint with stamina and head bob.
+- **Entities.** `engine::Entity` is one flat struct with optional
+  components: `model`, `collider`, `mover` (doors), `trigger` (fires
+  on entry), `usable` (fires on E). They live in a `World` the game owns
+  and talk by name, as in Quake's target/targetname: a button with
+  `Usable { target: "door" }` opens every entity named "door". Firing a
+  name nobody has logs a warning. Behavior is in Rust for now; Lua comes
+  later and will drive the same names.
 - **Cameras.** `engine::FlyCamera` is a ready-made free-flying camera
   (no collision). Update it in `tick`, read it in `draw` with
   `camera(frame.alpha)` so motion is smooth at any frame rate. Mouse look
@@ -171,7 +230,10 @@ engine App::frame
 | Change fog | Set `frame.fog` in `draw` |
 | Change the palette | Edit `assets/palettes/default.png` (live), or load another with `gfx.load_palette` in `init`. Tune dither strength with `DITHER_SPREAD` in `assets/shaders/post.wgsl` |
 | Add a texture | Put a PNG in `assets/textures/`, load it in `init` with `gfx.load_texture("textures/x.png")?`, draw with `frame.draw_textured(mesh, texture, model)` |
-| Use a camera | `FlyCamera` for exploring; write your own by setting `frame.camera` in `draw` |
+| Use a camera | `Walker` to walk with collision, `FlyCamera` for exploring; or write your own by setting `frame.camera` in `draw` |
+| Add level geometry | In `game/src/level.rs`: return another `Brush` from `stone()`, or spawn an `Entity` with a `model` and a `collider` |
+| Add a door, button or trigger | Spawn an `Entity` with `name` + `mover`, `usable`, or `trigger` that targets the name; see `level::build` |
+| Tune movement | Change `walker.settings` fields, or start from `WalkSettings::arena()` / `survival()` |
 | Change resolution, scaling or mipmaps | `Config { video: Video { .. } }` in `game/src/main.rs` |
 | Add a key | `base/src/keys.rs` (variant, update `COUNT`) and `platform/src/event.rs` (`map_key`) |
 | Add a shader | `render::Shader` variant, use it in a pass, add its path to `engine/src/assets.rs` (`shader_path`), add the file to the `shaders` test |
@@ -189,11 +251,12 @@ cargo test
 |---|---|
 | `base` | unit tests: slots, Vfs, watcher, image validation, PNG decode (all color types) and round-trip, mip downsampling (linear-light average, odd sizes), error chains |
 | `platform` | unit tests: clock math (injected time), key/button mapping, cursor grab fallback order |
+| `physics` | unit tests: brush construction (planes, bevels, faces, winding), box and ray traces (fractions, normals, start-solid), slide along walls and into corners, step up and down, ground detection, snap down |
 | `render` | unit tests: camera, letterbox, vertex and uniform layouts, fog encoding, mip chain sizes, palette loading, readback padding, GPU-test skip policy |
 | `render` GPU | `tests/headless.rs`: renders offscreen and checks pixels (culling, depth, shader reload, texture mapping, nearest filtering, texture replace/destroy/size limit, mipmaps, fog curves and background, palette quantization, dither pattern) |
 | shaders | `tests/shaders.rs`: naga validates every shipped `.wgsl` (no GPU needed) |
-| `engine` | unit tests: input edges, tick loop, cursor requests, fly camera (movement, look, clamping, interpolation), asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload |
-| `game` | shape geometry: counts, bounds, outward winding, floor UV tiling; palette mode cycling |
+| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach), brush meshes, asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload |
+| `game` | cube geometry; level layout (spawn is clear, ramp slopes, stair rises, door seals and hides); landing from flight needs room; profile and palette cycling |
 
 GPU tests in any crate use `render::test_support` (a dev-only feature), so
 they share one policy: they skip only when no GPU adapter exists; any other renderer
@@ -227,6 +290,6 @@ To move to a newer Rust: change `channel` in `rust-toolchain.toml`, run
 
 See [retro-fps-engine-plan.md](retro-fps-engine-plan.md). It starts with a
 status section: what is implemented and where each phase stands. Phase 1
-is in progress: the fly camera, textured meshes, mipmaps, distance fog and
-the palette/dither pass are done. Next come a BSP map loader (needs
-ericw-tools), lightmaps, and a reference-image test.
+lacks only what needs a map (BSP loader, lightmaps, reference-image
+test; they need ericw-tools). Phase 2 has collision, the walker and
+entities with doors, buttons and triggers; Lua scripting is next.

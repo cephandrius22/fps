@@ -101,11 +101,57 @@ impl<T> Slots<T> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Live values with their handles, in slot order (stable between
+    /// calls while nothing is inserted or removed).
+    pub fn iter(&self) -> impl Iterator<Item = (SlotId, &T)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let id = SlotId {
+                    index: index as u32,
+                    generation: entry.generation,
+                };
+                entry.value.as_ref().map(|value| (id, value))
+            })
+    }
+
+    /// As `iter`, with mutable values.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (SlotId, &mut T)> {
+        self.entries
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let id = SlotId {
+                    index: index as u32,
+                    generation: entry.generation,
+                };
+                entry.value.as_mut().map(|value| (id, value))
+            })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iter_skips_removed_slots_and_yields_live_handles() {
+        let mut slots = Slots::default();
+        let a = slots.insert("a");
+        let b = slots.insert("b");
+        let c = slots.insert("c");
+        slots.remove(b);
+
+        let live: Vec<_> = slots.iter().collect();
+        assert_eq!(live, [(a, &"a"), (c, &"c")]);
+
+        for (_, value) in slots.iter_mut() {
+            *value = "z";
+        }
+        assert_eq!(slots.get(c), Some(&"z"));
+    }
 
     #[test]
     fn insert_then_get() {

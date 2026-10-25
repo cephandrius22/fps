@@ -2,29 +2,42 @@
 //! is written against. Every public type here is the engine's own;
 //! platform and render types stay behind this crate.
 //!
+//! ```text
 //!   game ──► engine ──┬──► render ───► wgpu
+//!                     ├──► physics ──► (glam only)
 //!                     └──► platform ─► winit
 //!   (base: foundation utilities, usable by all)
+//! ```
 
 mod app;
 mod assets;
+mod collision;
 mod debug;
+mod entity;
 mod error;
 mod fly;
 mod gfx;
 mod input;
+mod look;
 mod sim;
+mod walk;
+mod world;
 
 pub use base::{BoxError, Button, Image, Key};
+pub use collision::{Aabb, Brush, Plane, Trace};
+pub use entity::{Close, Entity, Model, Mover, Repeat, Trigger, Usable};
 pub use error::EngineError;
-pub use fly::{FlyCamera, FlySettings, MouseLook};
+pub use fly::{FlyCamera, FlySettings};
 pub use gfx::{
     Camera, Falloff, Fog, Frame, Gfx, MeshData, MeshHandle, Mipmaps, Quantize, Scaling,
     TextureHandle, VSync, Vertex, Video,
 };
 pub use glam as math;
 pub use input::{CursorMode, Input};
+pub use look::{LookSettings, MouseLook};
 pub use sim::Tick;
+pub use walk::{HeadBob, Sprint, WalkSettings, Walker};
+pub use world::{EntityId, USE_REACH, World};
 
 /// Engine startup settings.
 pub struct Config {

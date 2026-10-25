@@ -1,4 +1,5 @@
-//! Procedural meshes for the sandbox: a unit cube and a tiled floor.
+//! Procedural meshes for the sandbox: a unit cube. Level geometry comes
+//! from brushes (`Brush::mesh`) instead.
 
 use engine::math::Vec3;
 use engine::{MeshData, Vertex};
@@ -57,35 +58,6 @@ pub fn cube(tint: Tint) -> MeshData {
     }
 
     data
-}
-
-/// Square floor of `size` meters at y = 0, facing up. The texture
-/// repeats `tiles` times along each side.
-///
-/// ```text
-///   (-h,-h) ┌───┐ (h,-h)     seen from above, -Z up the page;
-///           │   │            wound counter-clockwise
-///   (-h, h) └───┘ (h, h)
-/// ```
-pub fn floor(size: f32, tiles: f32) -> MeshData {
-    let h = size * HALF;
-    let corners = [(-h, -h), (-h, h), (h, h), (h, -h)];
-
-    let vertices = corners
-        .iter()
-        .map(|&(x, z)| Vertex {
-            pos: [x, 0.0, z],
-            normal: Vec3::Y.to_array(),
-            uv: [(x + h) / size * tiles, (z + h) / size * tiles],
-            color: WHITE,
-            ..Default::default()
-        })
-        .collect();
-
-    MeshData {
-        vertices,
-        indices: vec![0, 1, 2, 0, 2, 3],
-    }
 }
 
 #[cfg(test)]
@@ -151,18 +123,5 @@ mod tests {
                 .iter()
                 .any(|v| v.color != WHITE)
         );
-    }
-
-    #[test]
-    fn floor_faces_up_with_tiled_uvs() {
-        let floor = floor(10.0, 5.0);
-        assert_winds_with_normals(&floor);
-
-        for v in &floor.vertices {
-            assert_eq!(v.normal, [0.0, 1.0, 0.0]);
-            assert!(v.uv.iter().all(|&t| (0.0..=5.0).contains(&t)), "{:?}", v.uv);
-        }
-        let max_u = floor.vertices.iter().map(|v| v.uv[0]).fold(0.0, f32::max);
-        assert!((max_u - 5.0).abs() < EPS);
     }
 }

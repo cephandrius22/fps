@@ -1,5 +1,8 @@
-//! Debug hooks: screenshots on F12, or on a fixed frame for automated
-//! image checks (`ENGINE_CAPTURE_FRAME=120` saves frame 120, then exits).
+//! Debug hooks, engine-wide in every game: F12 saves the final low-res
+//! frame (after the palette pass, not window size) to
+//! `screenshots/<ms since epoch>.png` under the working directory.
+//! `ENGINE_CAPTURE_FRAME=120` saves frame 120 as frame-120.png, then
+//! exits, for automated image checks.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};

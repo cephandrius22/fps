@@ -57,6 +57,13 @@ impl Input {
         self.buttons_hit[button as usize]
     }
 
+    /// +1 while `positive` is held, -1 for `negative`, 0 for both or
+    /// neither. For movement and turning axes.
+    pub fn axis(&self, positive: Key, negative: Key) -> f32 {
+        let held = |key| f32::from(u8::from(self.is_down(key)));
+        held(positive) - held(negative)
+    }
+
     /// Raw mouse motion since the last tick, in device units.
     pub fn mouse_delta(&self) -> (f32, f32) {
         self.mouse_delta
@@ -186,5 +193,18 @@ mod tests {
             platform::CursorMode::Captured
         );
         assert_eq!(CursorMode::default(), CursorMode::Free);
+    }
+
+    #[test]
+    fn axis_cancels_opposites() {
+        let mut input = Input::default();
+        assert_eq!(input.axis(Key::W, Key::S), 0.0);
+
+        input.apply(key(Key::W, KeyState::Pressed));
+        assert_eq!(input.axis(Key::W, Key::S), 1.0);
+        assert_eq!(input.axis(Key::S, Key::W), -1.0);
+
+        input.apply(key(Key::S, KeyState::Pressed));
+        assert_eq!(input.axis(Key::W, Key::S), 0.0);
     }
 }
