@@ -182,6 +182,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "bake"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "level",
+ "log",
+]
+
+[[package]]
 name = "base"
 version = "0.1.0"
 dependencies = [
@@ -1093,6 +1102,7 @@ name = "mapc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bake",
  "base",
  "bsp",
  "glam",

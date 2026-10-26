@@ -1,10 +1,11 @@
 //! Map compiler: TrenchBroom .map source to the engine's level data,
 //! stored as .lvl. Replaces ericw-tools' qbsp for the engine's own
-//! format.
+//! format; the `mapc` command also lights the result with `bake`,
+//! replacing ericw-tools' light.
 //!
 //! ```text
-//!   .map ─► mapfile::parse ─► compile() ──────────────► Level ─► level::write ─► .lvl
-//!                              │ entities → models (compile.rs)
+//!   .map ─► mapfile::parse ─► compile() ─► Level ─► bake::bake ─► level::write ─► .lvl
+//!                              │ entities → models (compile.rs)            (main.rs)
 //!                              │ brushes  → solids: planes + polygons (solid.rs)
 //!                              │ solids   → visible faces (csg.rs)
 //!                              └ faces    → texels (projection.rs), textures.rs
@@ -12,8 +13,8 @@
 //!
 //! No BSP tree: the engine draws every face and collides against the
 //! brushes directly, so the compiler only needs polygons. Not yet:
-//! lightmaps (levels come out unlit), merging fragments, and dropping
-//! faces that face the void outside a sealed map.
+//! merging fragments, and dropping faces that face the void outside a
+//! sealed map.
 //!
 //! Modules (start with `compile.rs`):
 //!
@@ -26,7 +27,7 @@
 //!   textures.rs     texture table; sizes from PNGs
 //!   winding.rs      convex polygons: base square, cut, clip
 //!   plane.rs        f64 planes from three points
-//!   main.rs         the `mapc` command
+//!   main.rs         the `mapc` command: compile, bake, write
 //! ```
 
 mod compile;

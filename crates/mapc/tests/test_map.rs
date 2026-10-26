@@ -1,7 +1,8 @@
-//! mapc against qbsp: compiles maps/test.map and checks the result
-//! against assets/maps/test.bsp, which ericw-tools compiled from the
-//! same source. They split faces differently (qbsp along its BSP tree),
-//! so faces are compared by coverage and texture mapping, not one to
+//! mapc and bake against ericw-tools: compiles and lights
+//! maps/test.map and checks the result against assets/maps/test.bsp,
+//! which qbsp and light built from the same source. They split faces
+//! differently (qbsp along its BSP tree), so faces are compared by
+//! coverage, texture mapping and light at sample points, not one to
 //! one.
 
 use std::path::{Path, PathBuf};
@@ -26,6 +27,12 @@ fn compiled() -> Level {
     mapc::compile(&map, &mapc::png_sizes(&root().join("assets/textures")))
 }
 
+fn lit() -> Level {
+    let mut level = compiled();
+    bake::bake(&mut level);
+    level
+}
+
 fn qbsp() -> Level {
     bsp::parse(&std::fs::read(root().join("assets/maps/test.bsp")).unwrap()).unwrap()
 }
@@ -34,10 +41,14 @@ fn centroid(face: &Face) -> Vec3 {
     face.points.iter().sum::<Vec3>() / face.points.len() as f32
 }
 
-/// Whether `p` (on the face's plane) lies within the face.
+/// Whether `p` lies on the face's plane, within the face.
 fn contains(face: &Face, p: Vec3) -> bool {
     let p = p.as_dvec3();
     let normal = face.normal.as_dvec3();
+    if normal.dot(p - face.points[0].as_dvec3()).abs() > EPS {
+        return false;
+    }
+
     let next = face.points.iter().cycle().skip(1);
     face.points.iter().zip(next).all(|(a, b)| {
         let (a, b) = (a.as_dvec3(), b.as_dvec3());
@@ -45,11 +56,20 @@ fn contains(face: &Face, p: Vec3) -> bool {
     })
 }
 
-/// The face's texel at `p`, by its affine mapping through its first
-/// three corners.
+/// The face's texel at `p`, by its affine mapping through the corner
+/// fan triangle spanning the most area (qbsp keeps collinear corners).
 fn texel_at(face: &Face, p: Vec3) -> DVec2 {
-    let [a, b, c] = [0, 1, 2].map(|i| face.points[i].as_dvec3());
-    let [ta, tb, tc] = [0, 1, 2].map(|i| face.texels[i].as_dvec2());
+    let corners = 1..face.points.len() - 1;
+    let area = |i: usize| {
+        let [a, b, c] = [0, i, i + 1].map(|k| face.points[k].as_dvec3());
+        (b - a).cross(c - a).length()
+    };
+    let i = corners
+        .max_by(|&x, &y| area(x).total_cmp(&area(y)))
+        .unwrap();
+
+    let [a, b, c] = [0, i, i + 1].map(|k| face.points[k].as_dvec3());
+    let [ta, tb, tc] = [0, i, i + 1].map(|k| face.texels[k].as_dvec2());
     let (u, v) = (b - a, c - a);
     let w = p.as_dvec3() - a;
 
@@ -164,4 +184,71 @@ fn texture_sizes_match_qbsp() {
             (theirs.width, theirs.height)
         );
     }
+}
+
+/// The face's light at `p`, bilinear between luxel centers as the
+/// engine samples it.
+fn light_at(face: &Face, p: Vec3) -> f64 {
+    let lightmap = face.lightmap.as_ref().expect("lit");
+    let grid = level::LuxelGrid::new(&face.texels);
+    let coord = grid.coords(&[texel_at(face, p).as_vec2()])[0].as_dvec2() - 0.5;
+
+    let max = DVec2::new(
+        f64::from(lightmap.width - 1),
+        f64::from(lightmap.height - 1),
+    );
+    let coord = coord.clamp(DVec2::ZERO, max);
+    let (lo, frac) = (coord.floor(), coord - coord.floor());
+    let luxel = |x: f64, y: f64| {
+        let (x, y) = (x.min(max.x) as u32, y.min(max.y) as u32);
+        f64::from(lightmap.luxels[(y * lightmap.width + x) as usize])
+    };
+
+    let top = luxel(lo.x, lo.y) * (1.0 - frac.x) + luxel(lo.x + 1.0, lo.y) * frac.x;
+    let bottom = luxel(lo.x, lo.y + 1.0) * (1.0 - frac.x) + luxel(lo.x + 1.0, lo.y + 1.0) * frac.x;
+    top * (1.0 - frac.y) + bottom * frac.y
+}
+
+/// Light agreement on world faces, luxel levels of 255: rounding, and
+/// ericw placing edge samples its own way.
+const LIGHT_EPS: f64 = 2.0;
+
+/// World faces only: ericw gives every face of a brush entity (a door)
+/// one flat value, while bake lights each from where it sits.
+#[test]
+fn world_light_matches_ericw_light() {
+    let (ours, theirs) = (lit(), qbsp());
+    let (world, qbsp_world) = (&ours.models[0], &theirs.models[0]);
+    let mut checked = 0;
+
+    for face in qbsp_world.faces.iter().filter(|f| f.lightmap.is_some()) {
+        let center = centroid(face);
+        let ours = world
+            .faces
+            .iter()
+            .find(|f| f.normal.dot(face.normal) > SAME_DIRECTION && contains(f, center))
+            .expect("coverage is checked above");
+
+        let (got, expected) = (light_at(ours, center), light_at(face, center));
+        assert!(
+            (got - expected).abs() <= LIGHT_EPS,
+            "light at {center}: {got:.1} vs {expected:.1}"
+        );
+        checked += 1;
+    }
+
+    assert!(checked > qbsp_world.faces.len() / 2);
+}
+
+/// The committed .lvl is what mapc builds today, so the engine's tests
+/// and the game never run a stale compile. Rebuild it with
+/// `cargo run -p mapc -- maps/test.map assets/maps/test.lvl`.
+#[test]
+fn committed_level_is_current() {
+    let committed = std::fs::read(root().join("assets/maps/test.lvl")).unwrap();
+
+    assert!(
+        level::write(&lit()) == committed,
+        "assets/maps/test.lvl is stale: recompile it with mapc"
+    );
 }

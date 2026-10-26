@@ -23,8 +23,8 @@ const WORLD_GROUPS: [&str; 2] = ["func_group", "func_detail"];
 const MODEL_KEY: &str = "model";
 
 /// Compiles a parsed .map into a level, sizing textures with `sizes`.
-/// Unlit: lightmaps are a later step. Broken brushes are logged and
-/// left out.
+/// Unlit: `bake` adds the lightmaps. Broken brushes are logged and left
+/// out.
 pub fn compile(map: &Map, sizes: &TextureSizes) -> Level {
     let (entities, models) = group(map);
     let mut textures = TextureTable::new(sizes);

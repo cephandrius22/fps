@@ -1,7 +1,7 @@
 //! The committed test map (maps/test.map) loaded on a headless GPU:
 //! collision, doors, a walker on its stairs, and a reference image.
-//! Behavior is checked on both compiles, qbsp's .bsp and mapc's .lvl;
-//! the image only on the .bsp, the lit one.
+//! Behavior and the image are checked on both compiles: ericw-tools'
+//! .bsp and mapc's .lvl, each lit by its own baker.
 
 use base::Key;
 use platform::{Event, KeyState};
@@ -20,10 +20,12 @@ use crate::test_util::{assert_matches_reference, headless_with, repo_assets};
 use crate::walk::{WalkSettings, Walker};
 use crate::world::World;
 
-/// The test map compiled by ericw-tools (lit) and by mapc (unlit).
+/// The test map compiled by ericw-tools and by mapc.
 const BSP: &str = "maps/test.bsp";
 const LEVEL: &str = "maps/test.lvl";
-const REFERENCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/reference/test-map.png");
+/// Reference views of each.
+const BSP_REFERENCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/reference/test-map.png");
+const LEVEL_REFERENCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/reference/test-map-lvl.png");
 /// Reference render size: small, so few pixels sit on triangle edges.
 const REFERENCE_SIZE: (u32, u32) = (320, 180);
 const DT: f32 = 1.0 / 60.0;
@@ -79,10 +81,19 @@ fn reach_north(world: &World, from: Vec3) -> f32 {
 /// The view from the player start, lit by the baked lightmaps, without
 /// fog or palette (those would amplify GPU differences), against the
 /// committed reference image. Catches regressions anywhere from map
-/// parsing to shading.
+/// parsing (or, for the .lvl, compiling and baking) to shading.
 #[test]
 fn view_from_the_start_matches_the_reference() {
-    with_map_rendering(BSP, |world, info, renderer| {
+    assert_view_matches(BSP, BSP_REFERENCE);
+}
+
+#[test]
+fn level_view_from_the_start_matches_its_reference() {
+    assert_view_matches(LEVEL, LEVEL_REFERENCE);
+}
+
+fn assert_view_matches(path: &str, reference: &str) {
+    with_map_rendering(path, |world, info, renderer| {
         let start = info.start.unwrap();
         let eye = start.feet + Vec3::Y * EYE;
 
@@ -93,7 +104,7 @@ fn view_from_the_start_matches_the_reference() {
         frame.submit(renderer);
 
         let shot = renderer.capture().unwrap();
-        assert_matches_reference(&shot, std::path::Path::new(REFERENCE));
+        assert_matches_reference(&shot, std::path::Path::new(reference));
     });
 }
 

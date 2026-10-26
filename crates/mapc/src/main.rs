@@ -1,4 +1,5 @@
-//! `mapc`: compiles a TrenchBroom .map into a .lvl the engine loads.
+//! `mapc`: compiles a TrenchBroom .map into a .lvl the engine loads,
+//! lit by `bake`.
 //!
 //! ```text
 //!   cargo run -p mapc -- maps/test.map assets/maps/test.lvl
@@ -57,7 +58,14 @@ fn main() -> Result<()> {
     let text = std::fs::read_to_string(&args.input)
         .with_context(|| format!("read {}", args.input.display()))?;
     let map = mapfile::parse(&text).with_context(|| format!("parse {}", args.input.display()))?;
-    let level = mapc::compile(&map, &mapc::png_sizes(&args.textures));
+    let mut level = mapc::compile(&map, &mapc::png_sizes(&args.textures));
+    let baked = bake::bake(&mut level);
+    log::info!(
+        "lit {} faces ({} luxels) from {} lights",
+        baked.faces,
+        baked.luxels,
+        baked.lights
+    );
 
     std::fs::write(&args.output, level::write(&level))
         .with_context(|| format!("write {}", args.output.display()))?;

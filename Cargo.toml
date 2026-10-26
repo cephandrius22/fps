@@ -14,6 +14,7 @@ bsp = { path = "crates/bsp" }
 physics = { path = "crates/physics" }
 platform = { path = "crates/platform" }
 level = { path = "crates/level" }
+bake = { path = "crates/bake" }
 mapfile = { path = "crates/mapfile" }
 mapc = { path = "crates/mapc" }
 render = { path = "crates/render" }
