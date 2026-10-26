@@ -306,9 +306,8 @@ impl Gfx<'_> {
         Ok(())
     }
 
-    /// Loads a map, e.g. "maps/test.lvl" (compiled by mapc) or
-    /// "maps/test.bsp" (compiled by ericw-tools with `qbsp -wrbrushes`),
-    /// and spawns its geometry and entities into `world`. Map textures
+    /// Loads a map compiled by mapc, e.g. "maps/test.lvl", and spawns
+    /// its geometry and entities into `world`. Map textures
     /// load from `textures/<name>.png`.
     pub fn load_map(&mut self, path: &str, world: &mut World) -> Result<MapInfo, EngineError> {
         map::load(self, world, path)

@@ -5,10 +5,11 @@
 //! ```text
 //!   game ──► engine ──┬──► render ───► wgpu
 //!                     ├──► physics ──► (glam only)
-//!                     ├──► bsp ──────► level (Quake .bsp → level data)
 //!                     ├──► script ───► mlua (Lua 5.4)
+//!                     ├──► props ────► gltf (prop models)
 //!                     └──► platform ─► winit
-//!   (level: the map data model every format becomes, and .lvl files;
+//!   (level: the map data model and .lvl files;
+//!    entities: entity classes and their defaults;
 //!    base: foundation utilities, usable by all)
 //! ```
 //!
@@ -27,7 +28,7 @@
 //!   player     walk.rs     Walker: the character controller and its profiles
 //!              fly.rs      FlyCamera: noclip flying
 //!              look.rs     mouse and arrow-key look, shared by both
-//!   maps       map/        .bsp / .lvl → meshes, brushes, lightmaps, entities
+//!   maps       map/        .lvl → meshes, brushes, lightmaps, entities, props
 //!              atlas.rs    lightmap atlas packing
 //!   running    app.rs      the main loop
 //!              assets.rs   asset registry and hot reload

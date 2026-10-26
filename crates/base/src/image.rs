@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 
 const BYTES_PER_PIXEL: usize = 4;
 const CHANNEL_MAX: f32 = u8::MAX as f32;
+/// Rec. 709 luminance weights for linear red, green and blue.
+const LUMA_R: f32 = 0.2126;
+const LUMA_G: f32 = 0.7152;
+const LUMA_B: f32 = 0.0722;
 
 /// Why an image could not be built, read or written.
 #[derive(Debug, thiserror::Error)]
@@ -122,6 +126,21 @@ impl Image {
         }
     }
 
+    /// Mean brightness in linear light, 0 (black) to 1 (white): how
+    /// much light a surface of this texture reflects. Rec. 709 luminance
+    /// weights; alpha ignored.
+    pub fn luminance(&self) -> f32 {
+        let pixels = self.rgba.as_chunks::<BYTES_PER_PIXEL>().0;
+        let total: f32 = pixels
+            .iter()
+            .map(|&[r, g, b, _]| {
+                let [r, g, b] = [r, g, b].map(srgb_to_linear);
+                LUMA_R * r + LUMA_G * g + LUMA_B * b
+            })
+            .sum();
+        total / pixels.len() as f32
+    }
+
     /// Average of the 2×2 block at (x, y), clipped to the image: a 1-wide
     /// image averages vertical pairs only.
     fn box_average(&self, x: u32, y: u32) -> [u8; 4] {
@@ -231,7 +250,18 @@ pub fn write_png(path: &Path, image: &Image) -> Result<(), ImageError> {
     }
 
     let file = File::create(path).map_err(create)?;
-    let mut encoder = png::Encoder::new(BufWriter::new(file), image.width, image.height);
+    encode(BufWriter::new(file), image)
+}
+
+/// `image` as PNG bytes, e.g. to embed in another file.
+pub fn encode_png(image: &Image) -> Result<Vec<u8>, ImageError> {
+    let mut bytes = Vec::new();
+    encode(&mut bytes, image)?;
+    Ok(bytes)
+}
+
+fn encode(out: impl std::io::Write, image: &Image) -> Result<(), ImageError> {
+    let mut encoder = png::Encoder::new(out, image.width, image.height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
 
@@ -282,6 +312,29 @@ mod tests {
         assert_eq!(image.pixel(1, 0), Some([5, 6, 7, 8]));
         assert_eq!(image.pixel(0, 1), None);
         assert_eq!(Image::solid([9, 9, 9, 9]).pixel(0, 0), Some([9, 9, 9, 9]));
+    }
+
+    #[test]
+    fn encoded_png_decodes_to_the_same_image() {
+        let image = Image::new(2, 1, [[1, 2, 3, 4], [250, 251, 252, 253]].concat()).unwrap();
+        let bytes = encode_png(&image).unwrap();
+
+        assert_eq!(read_png(&bytes).unwrap(), image);
+    }
+
+    #[test]
+    fn luminance_is_linear_mean_brightness() {
+        let white = Image::solid([255; 4]);
+        let black = Image::solid([0, 0, 0, 255]);
+        assert!((white.luminance() - 1.0).abs() < 1e-6);
+        assert_eq!(black.luminance(), 0.0);
+
+        // Half black, half white: half the light, not sRGB 128's 22%.
+        let checker = Image::new(2, 1, [[0, 0, 0, 255], [255; 4]].concat()).unwrap();
+        assert!((checker.luminance() - 0.5).abs() < 1e-6);
+
+        let green = Image::solid([0, 255, 0, 255]);
+        assert!((green.luminance() - LUMA_G).abs() < 1e-6);
     }
 
     #[test]

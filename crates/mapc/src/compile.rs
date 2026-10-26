@@ -5,6 +5,10 @@
 //!   worldspawn + func_group + func_detail ─► model 0 (the world)
 //!   every other entity with brushes       ─► model N, "model" "*N"
 //!   point entities (lights, player start) ─► entities only
+//!
+//!   per model: brushes ─► solids ─► csg::visible ─► fragments
+//!              (world only: drop those facing the void, outside.rs)
+//!              ─► merge.rs ─► level faces
 //! ```
 
 use glam::DVec3;
@@ -12,25 +16,34 @@ use level::{Contents, Face, Level, Model};
 use mapfile::Map;
 
 use crate::csg::{self, Fragment};
+use crate::merge::merge;
+use crate::outside::Interior;
 use crate::projection::Projection;
 use crate::solid::Solid;
 use crate::textures::{TextureSizes, TextureTable};
 
 const WORLDSPAWN: &str = "worldspawn";
-/// Brush entities that only group brushes: merged into the world, and
-/// gone from the entity list.
-const WORLD_GROUPS: [&str; 2] = ["func_group", "func_detail"];
 const MODEL_KEY: &str = "model";
+/// Model index of the world.
+const WORLD: usize = 0;
 
 /// Compiles a parsed .map into a level, sizing textures with `sizes`.
 /// Unlit: `bake` adds the lightmaps. Broken brushes are logged and left
 /// out.
 pub fn compile(map: &Map, sizes: &TextureSizes) -> Level {
     let (entities, models) = group(map);
+    let seeds = seeds(map);
     let mut textures = TextureTable::new(sizes);
     let models = models
         .iter()
-        .map(|brushes| model(brushes, &mut textures))
+        .enumerate()
+        .map(|(index, brushes)| {
+            let void = match index {
+                WORLD => Void::Drop(&seeds),
+                _ => Void::Keep,
+            };
+            model(brushes, void, &mut textures)
+        })
         .collect();
 
     Level {
@@ -58,7 +71,7 @@ fn group(map: &Map) -> (Vec<level::Entity>, Vec<Vec<&mapfile::Brush>>) {
 
     for (index, entity) in map.entities.iter().enumerate() {
         let classname = entity.fields.classname();
-        let merged = Some(index) == world || WORLD_GROUPS.contains(&classname);
+        let merged = Some(index) == world || is_group(classname);
         if merged {
             models[0].extend(&entity.brushes);
             continue;
@@ -75,8 +88,30 @@ fn group(map: &Map) -> (Vec<level::Entity>, Vec<Vec<&mapfile::Brush>>) {
     (entities, models)
 }
 
+/// Whether the catalog says `classname` only groups brushes (e.g.
+/// func_group): merged into the world, and gone from the entity list.
+fn is_group(classname: &str) -> bool {
+    entities::class(classname).is_some_and(|c| c.kind == entities::Kind::Group)
+}
+
+/// Origins of point entities: where the map's open space is.
+fn seeds(map: &Map) -> Vec<DVec3> {
+    let points = map.entities.iter().filter(|e| e.brushes.is_empty());
+    points
+        .filter_map(|e| entities::Keys::of(&e.fields).vector("origin"))
+        .collect()
+}
+
+/// What to do with faces that face the void outside the map.
+enum Void<'a> {
+    /// Find the outside by flooding from these points; drop its faces.
+    Drop(&'a [DVec3]),
+    /// Keep every face (brush entities, which move).
+    Keep,
+}
+
 /// One model: its solids, their visible faces, and its bounds.
-fn model(brushes: &[&mapfile::Brush], textures: &mut TextureTable) -> Model {
+fn model(brushes: &[&mapfile::Brush], void: Void, textures: &mut TextureTable) -> Model {
     let solids: Vec<Solid> = brushes
         .iter()
         .filter_map(|brush| {
@@ -86,7 +121,12 @@ fn model(brushes: &[&mapfile::Brush], textures: &mut TextureTable) -> Model {
         })
         .collect();
 
-    let faces = csg::visible(&solids)
+    let mut fragments = csg::visible(&solids);
+    if let Void::Drop(seeds) = void {
+        drop_outside(&mut fragments, &solids, seeds);
+    }
+
+    let faces = merge(fragments, &solids)
         .iter()
         .flat_map(|fragment| faces(fragment, &solids, textures))
         .collect();
@@ -106,6 +146,23 @@ fn model(brushes: &[&mapfile::Brush], textures: &mut TextureTable) -> Model {
         faces,
         brushes: solids.iter().map(Solid::to_level).collect(),
     }
+}
+
+/// Removes fragments facing the void; keeps all, logged, when the map
+/// leaks or has nothing inside to flood from.
+fn drop_outside(fragments: &mut Vec<Fragment>, solids: &[Solid], seeds: &[DVec3]) {
+    let interior = match Interior::flood(solids, seeds) {
+        Ok(interior) => interior,
+        Err(unsealed) => {
+            log::warn!("{unsealed}: faces facing the void are kept");
+            return;
+        }
+    };
+
+    fragments.retain(|f| {
+        let normal = solids[f.solid].sides[f.side].plane.normal;
+        interior.sees(&f.winding, normal)
+    });
 }
 
 /// The level faces for one visible fragment: none for tool textures,

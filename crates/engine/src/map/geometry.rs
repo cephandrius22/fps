@@ -1,8 +1,8 @@
 //! Map geometry: textures by name, one mesh per texture per model, and
 //! the solid brushes of each model.
 //!
-//! Textures are `textures/<name>.png`, sized by the map's miptex headers
-//! (which qbsp filled from the same PNGs). Tool textures (trigger, clip,
+//! Textures are `textures/<name>.png`, sized by the map's texture table
+//! (which mapc filled from the same PNGs). Tool textures (trigger, clip,
 //! skip, …) mark brushes for the compiler or the game and are never
 //! drawn.
 

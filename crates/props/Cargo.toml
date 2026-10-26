@@ -1,0 +1,18 @@
+[package]
+name = "props"
+description = "Prop models: glTF binary (.glb) files read into plain meshes and textures, and written back."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+base.workspace = true
+glam.workspace = true
+gltf.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+
+[lints]
+workspace = true

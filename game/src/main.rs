@@ -4,8 +4,7 @@
 //! (assets/scripts/sandbox.lua).
 //!
 //! Or play a compiled map instead: `cargo run -p game -- maps/test.lvl`
-//! (mapc) or `maps/test.bsp` (ericw-tools) loads it from the asset
-//! directory and starts at its player start.
+//! loads it from the asset directory and starts at its player start.
 //!
 //! Bindings owned here (walking comes from `Walker`, flying from
 //! `FlyCamera`, F12 screenshots from the engine; README.md lists them

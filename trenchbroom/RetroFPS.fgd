@@ -1,0 +1,108 @@
+// Entity definitions for TrenchBroom. Generated from crates/entities/src/catalog.rs: edit that, then run
+// cargo run -p entities -- trenchbroom/RetroFPS.fgd
+
+@SolidClass = worldspawn : "The world: every brush not in another entity"
+[
+	message(string) : "Map title"
+	light(integer) : "Least light anywhere (minlight)" : 0
+	_anglescale(float) : "How much light depends on its arrival angle, 0 to 1" : "0.5"
+	_bounce(integer) : "Bounced light passes (0: none)" : 1
+	_bouncescale(float) : "Bounced light multiplier" : "1"
+]
+
+@PointClass size(-16 -16 -24, 16 16 32) color(0 255 0) = info_player_start : "Where the player starts"
+[
+	angle(integer) : "Facing, degrees counter-clockwise from +X" : 0
+]
+
+@PointClass size(-8 -8 -8, 8 8 8) color(255 255 0) = light : "Point light, baked into lightmaps"
+[
+	light(integer) : "Brightness" : 300
+	wait(float) : "Distance scale: 2 reaches half as far" : "1"
+	delay(choices) : "Falloff" : 0 =
+	[
+		0 : "Linear"
+		1 : "1/distance"
+		2 : "1/distance^2"
+	]
+]
+
+@PointClass size(-16 -16 0, 16 16 32) color(160 100 40) model({ "path": model }) = prop_static : "A glTF model (.glb) standing in the world"
+[
+	targetname(target_source) : "Name: what targets this"
+	script(string) : "Lua class (a table in assets/scripts/) whose hooks run for it"
+	model(string) : "Model file under assets/, e.g. models/barrel.glb"
+	angle(integer) : "Turn, degrees counter-clockwise seen from above" : 0
+	scale(float) : "Size multiplier" : "1"
+	solid(choices) : "Blocks movement with a box around the model" : 1 =
+	[
+		0 : "No"
+		1 : "Yes"
+	]
+]
+
+@SolidClass = func_door : "Slides open when fired, or on approach when unnamed"
+[
+	targetname(target_source) : "Name: what targets this"
+	script(string) : "Lua class (a table in assets/scripts/) whose hooks run for it"
+	_shadow(choices) : "Casts shadows when the map is lit" : 0 =
+	[
+		0 : "No"
+		1 : "Yes"
+	]
+	angle(integer) : "Opening direction, degrees; -1 up, -2 down" : 0
+	speed(float) : "Units per second" : "100"
+	wait(float) : "Seconds open before closing; -1 stays open" : "3"
+	lip(float) : "Units left showing when open" : "8"
+]
+
+@SolidClass = func_button : "Fires its target when used"
+[
+	targetname(target_source) : "Name: what targets this"
+	target(target_destination) : "Fires every entity with this name"
+	script(string) : "Lua class (a table in assets/scripts/) whose hooks run for it"
+	_shadow(choices) : "Casts shadows when the map is lit" : 0 =
+	[
+		0 : "No"
+		1 : "Yes"
+	]
+]
+
+@SolidClass = trigger_once : "Fires its target the first time the player enters"
+[
+	targetname(target_source) : "Name: what targets this"
+	target(target_destination) : "Fires every entity with this name"
+	script(string) : "Lua class (a table in assets/scripts/) whose hooks run for it"
+]
+
+@SolidClass = trigger_multiple : "Fires its target every time the player enters"
+[
+	targetname(target_source) : "Name: what targets this"
+	target(target_destination) : "Fires every entity with this name"
+	script(string) : "Lua class (a table in assets/scripts/) whose hooks run for it"
+]
+
+@SolidClass = func_wall : "Drawn and solid, nothing more"
+[
+	targetname(target_source) : "Name: what targets this"
+	script(string) : "Lua class (a table in assets/scripts/) whose hooks run for it"
+	_shadow(choices) : "Casts shadows when the map is lit" : 0 =
+	[
+		0 : "No"
+		1 : "Yes"
+	]
+]
+
+@SolidClass = func_illusionary : "Drawn, not solid"
+[
+	targetname(target_source) : "Name: what targets this"
+	script(string) : "Lua class (a table in assets/scripts/) whose hooks run for it"
+]
+
+@SolidClass = func_group : "Groups brushes in the editor; part of the world"
+[
+]
+
+@SolidClass = func_detail : "Detail brushes; part of the world"
+[
+]

@@ -31,6 +31,8 @@ const QUAKE_AXES: [[DVec3; 3]; 6] = [
 ];
 /// A dot product must beat the best by this to win.
 const TIE_EPSILON: f64 = 1e-4;
+/// Axes and offsets this close map alike.
+const MATCH_EPSILON: f64 = 1e-6;
 
 /// One face's texture mapping.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,6 +57,13 @@ impl Projection {
             axes: [axes[0] / scale.x, axes[1] / scale.y],
             offset: face.offset,
         }
+    }
+
+    /// Whether `other` maps every point to the same texel.
+    pub(crate) fn matches(&self, other: &Projection) -> bool {
+        self.axes[0].abs_diff_eq(other.axes[0], MATCH_EPSILON)
+            && self.axes[1].abs_diff_eq(other.axes[1], MATCH_EPSILON)
+            && self.offset.abs_diff_eq(other.offset, MATCH_EPSILON)
     }
 
     /// Texel coordinates of `p`.

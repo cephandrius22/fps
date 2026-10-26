@@ -4,18 +4,17 @@ A from-scratch first-person engine in Rust with a Quake / Half-Life-era look:
 low internal resolution, chunky nearest-neighbor pixels, a hand-written
 renderer. The look is a setting, not a limit, so the engine can grow past it.
 
-**Status:** Phases 1 (first world) and 2 (walking around) of
-[retro-fps-engine-plan.md](retro-fps-engine-plan.md) are done:
-a Quake map loader, brush collision, a character controller, entities
-and Lua scripting all work. The sandbox is a
+**Status:** Phases 1 (first world), 2 (walking around) and 3 (own
+toolchain) of [retro-fps-engine-plan.md](retro-fps-engine-plan.md) are
+done: brush collision, a character controller, entities, Lua scripting,
+and a toolchain of its own. Maps are made in TrenchBroom, compiled by
+`mapc` and lit by `bake` (with bounced light) into the engine's .lvl
+format, with glTF props placed among the brushes. The sandbox is a
 small brush-built level you walk through: stairs, a walkable and a
 too-steep ramp, crates, and a room behind a sliding door opened by a
-button. Inside, a Lua-scripted button opens a secret panel. Maps load too: geometry, collision
-brushes and entities (doors, buttons, triggers), from Quake .bsp files
-compiled with ericw-tools or from the engine's own .lvl files compiled
-by `mapc` and lit by `bake`, Phase 3's own toolchain. Everything runs in distance fog at
-640×360, quantized to a 256-color palette with ordered dithering, and
-upscaled to the window.
+button. Inside, a Lua-scripted button opens a secret panel. Everything
+runs in distance fog at 640×360, quantized to a 256-color palette with
+ordered dithering, and upscaled to the window.
 
 ## Quick start
 
@@ -28,15 +27,10 @@ system libraries on macOS or Windows. On Linux, install
 cargo run -p game
 ```
 
-Or play the test map (`maps/test.map`): three rooms, a door opened by
-the red button, a door that opens as you approach, stairs, and a
-scripted trigger. `test.bsp` is ericw-tools' compile and light;
-`test.lvl` is the engine's own (`mapc`, lit by `bake`). They look
-nearly the same.
-
-```bash
-cargo run -p game -- maps/test.bsp
-```
+Or play the test map (`maps/test.map`, compiled to
+`assets/maps/test.lvl`): three rooms, a door opened by the red button,
+a door that opens as you approach, stairs, a scripted trigger, and two
+barrels (glTF props).
 
 ```bash
 cargo run -p game -- maps/test.lvl
@@ -96,6 +90,30 @@ version stays active.
 | `REQUIRE_GPU=1` | Make GPU tests fail, instead of skip, when no GPU is found |
 | `UPDATE_REFERENCE=1` | Rewrite reference images (`crates/engine/reference/*.png`) from the current render instead of comparing |
 
+## Editing maps
+
+Maps are made in [TrenchBroom](https://trenchbroom.github.io). The
+`trenchbroom/` folder is the engine's game configuration
+(`GameConfig.cfg`) and entity definitions (`RetroFPS.fgd`, generated).
+To set it up once:
+
+1. Link or copy `trenchbroom/` into TrenchBroom's games folder as
+   `RetroFPS`: `~/Library/Application Support/TrenchBroom/games/` on
+   macOS, `~/.TrenchBroom/games/` on Linux, `%AppData%\TrenchBroom\games\`
+   on Windows.
+2. In TrenchBroom's preferences, under Games, set RetroFPS's game path
+   to this repository. Textures come from `assets/textures/`; props
+   (`prop_static`, "model" `models/<name>.glb`) from `assets/models/`.
+
+Save maps in `maps/`, Valve 220 or standard format, then compile and
+play:
+
+```bash
+cargo run -p mapc -- maps/test.map assets/maps/test.lvl
+```
+
+`mapc` compiles and lights the map; commit the `.lvl` with the source.
+
 ## Repository layout
 
 ```
@@ -103,20 +121,22 @@ assets/shaders/    WGSL shaders (hot-reloadable)
 assets/textures/   PNG textures (hot-reloadable)
 assets/palettes/   16×16 PNG palettes: 16 ramps of 16 shades (hot-reloadable)
 assets/scripts/    Lua entity classes, all loaded at startup (hot-reloadable)
-assets/maps/       compiled maps (.bsp from ericw-tools, .lvl from mapc), committed
+assets/models/     glTF props (.glb)
+assets/maps/       compiled maps (.lvl, from mapc), committed
 maps/              map sources (.map): edit in TrenchBroom or by hand
-tools/             compile-map.sh: .map → .bsp with ericw-tools
+trenchbroom/       TrenchBroom game configuration and the generated FGD
 crates/
   base/            foundation: logging, verify!, Key/Button, Slots, Vfs, Watcher, Image/PNG
   platform/        OS layer: window, cursor capture, OS events, fixed-timestep clock (wraps winit)
   render/          renderer: low-res targets, meshes, textures, fog, palette pass, readback (wraps wgpu)
   physics/         collision: convex brushes, box traces, slide / step / ground moves (glam only)
   script/          Lua host: sandboxed VM, entity classes, hooks, commands (wraps mlua)
-  level/           level data model shared by every map format, and the .lvl file format
-  bsp/             Quake map reader: BSP29/BSP2 faces, BSPX brushes, entities → level data
+  level/           level data model, and the .lvl file format
+  entities/        entity class catalog: keys and defaults; the `fgd` command
+  props/           glTF (.glb) prop models → meshes and textures
   mapfile/         .map source reader: entities, brushes, faces, texture mapping
   mapc/            map compiler (library + `mapc` command): .map → .lvl
-  bake/            lightmap baker: light entities + brush shadows → face lightmaps
+  bake/            lightmap baker: direct and bounced light, shadows → face lightmaps
   engine/          main loop, world + entities, walker and fly camera, maps, asset loading:
                    the API games are written against
 game/              the game layer: a sandbox level (game/src/level.rs), or any map passed as an argument
@@ -132,14 +152,15 @@ whichever layer below you need.
 | Crate | What it is for | Uses (workspace crates) | Start reading at |
 |---|---|---|---|
 | `game` | The playable sandbox: the `Game` impl, player controls, the brush-built level | `engine` | `game/src/main.rs`, then `level.rs` |
-| `engine` | Everything a game talks to: the main loop, world and entities, walker and fly camera, maps (.bsp and .lvl), asset loading and hot reload | `render`, `physics`, `script`, `bsp`, `level`, `platform`, `base` | `lib.rs` (the `Game` trait), `world/mod.rs`, `gfx.rs` |
+| `engine` | Everything a game talks to: the main loop, world and entities, walker and fly camera, maps and props, asset loading and hot reload | `render`, `physics`, `script`, `props`, `level`, `entities`, `platform`, `base` | `lib.rs` (the `Game` trait), `world/mod.rs`, `gfx.rs` |
 | `render` | Draws frames with wgpu: low-res target, textures and lightmaps, fog, palette pass, upscale | `base` | `lib.rs` (`Renderer`), then `passes/` |
 | `physics` | Collision against convex brushes: box traces, sliding, stepping | `base` | `brush.rs`, `world.rs`, `mover.rs` |
 | `script` | Runs Lua entity scripts (via mlua) in a sandbox; scripts read a world snapshot and queue commands | — | `lib.rs` (`Vm`), `api.rs` (the Lua API) |
-| `bsp` | Reads Quake .bsp files into level data: faces, lightmaps, brushes, entities | `level` | `lib.rs` (`parse`), `geometry.rs` |
-| `level` | The level data model every map format becomes, and the engine's own binary .lvl format | — | `model.rs` (the data types), `format.rs` |
-| `mapc` | The map compiler: .map → level data → .lvl. Brush polygons, CSG, texture mapping, contents. A command (which also bakes light) and a library | `mapfile`, `bake`, `level`, `base` | `lib.rs`, then `compile.rs` |
-| `bake` | The lightmap baker: lights any level's faces from its light entities, with shadows from its brushes | `level` | `lib.rs`, then `face.rs` |
+| `props` | Reads glTF binary (.glb) props into meshes and textures, and writes them (for models made in code) | `base` | `lib.rs`, then `read.rs` |
+| `level` | The level data a map compiles to, and the engine's binary .lvl format | — | `model.rs` (the data types), `format.rs` |
+| `entities` | Every entity class a map can place: keys, types, defaults. The engine and tools read defaults from it; the `fgd` command writes TrenchBroom's FGD | `level` | `catalog.rs` |
+| `mapc` | The map compiler: .map → level data → .lvl. Brush polygons, CSG, void-face removal, fragment merging, texture mapping, contents. A command (which also bakes light) and a library | `mapfile`, `bake`, `entities`, `level`, `base` | `lib.rs`, then `compile.rs` |
+| `bake` | The lightmap baker: lights any level's faces from its light entities, with shadows and bounced light; gives props a light level | `entities`, `level` | `lib.rs`, then `face.rs` |
 | `mapfile` | Reads TrenchBroom .map source: entities, brushes, faces, Quake standard and Valve 220 texture mapping | `level` | `parse.rs` (the grammar) |
 | `platform` | The window and OS events (wraps winit), and the fixed-timestep clock | `base` | `run.rs` |
 | `base` | Small shared pieces: images, generational handles, asset files, the file watcher, input vocabulary, errors | — | `lib.rs` |
@@ -157,23 +178,25 @@ whichever layer below you need.
             └────┬───────────┬────────────┬────────────┬────────────┬──────┘
                  ▼           ▼            ▼            ▼            ▼
             ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐ ┌──────────┐
-            │render   │ │physics  │ │script    │ │bsp      │ │platform  │
-            │(wgpu)   │ │(brushes)│ │(mlua)    │ │(.bsp)   │ │(winit)   │
+            │render   │ │physics  │ │script    │ │props    │ │platform  │
+            │(wgpu)   │ │(brushes)│ │(mlua)    │ │(.glb)   │ │(winit)   │
             └─────────┘ └─────────┘ └──────────┘ └─────────┘ └──────────┘
 
    tools, run offline (games never link them):
             mapc ─┬► mapfile (.map source)
                   └► bake    (lightmaps)
+            fgd  ──► entities (writes trenchbroom/RetroFPS.fgd)
 
-   level ── map data model: bsp produces it, mapc builds it, bake
-            lights it, the engine's map loader consumes it
-   base  ── foundation utilities, usable by every layer
+   level    ── map data: mapc builds it, bake lights it, the engine loads it
+   entities ── entity classes and defaults: the engine, the tools and
+               the editor share them
+   base     ── foundation utilities, usable by every layer
 ```
 
 Dependency rules:
 
 - A layer talks only to the layer directly below it. `game` sees only
-  `engine`. `render`, `physics`, `script`, `bsp` and `platform` are
+  `engine`. `render`, `physics`, `script`, `props` and `platform` are
   siblings and never depend on each other: the renderer takes any raw window handle, not a
   `platform::Window`.
 - Library types stop at their wrapper. winit never leaves `platform`,
@@ -184,11 +207,12 @@ Dependency rules:
   and `engine::CursorMode`. `engine/src/gfx.rs` is the only place they are
   converted to `render` types, `engine/src/collision.rs` the only place
   for `physics` types, `engine/src/world/scripting.rs` the only user of `script`,
-  and `engine/src/map/` the only user of `bsp` and `level`, so
+  and `engine/src/map/` the only user of `level` and `props`, so
   lower-layer internals can change without breaking games.
-- Every map format becomes `level` data before the engine sees it, so
-  one loader serves .bsp and .lvl alike, and a new format is a new
-  reader, not engine work.
+- Map files are `level` data, so the compiler and the engine share one
+  data model, and a format change is one crate's work.
+- Entity class keys and defaults live only in `entities`: the engine,
+  the baker, the compiler and the editor's FGD all read them there.
 - `base` has no knowledge of windows, GPUs or game rules. Shared vocabulary
   (`Key`, `Button`) lives there because two layers need it.
 - `render` does no file I/O. The engine hands it shader source.
@@ -265,8 +289,8 @@ engine App::frame
   any closed set of planes, such as ramps). The same brush is what
   collides and, through `brush.mesh(meters_per_texture)`, what is drawn,
   so they never disagree. Textures are projected along the nearest world
-  axis, Quake-style, so neighboring brushes line up. A map loader will
-  produce the same brushes later.
+  axis, Quake-style, so neighboring brushes line up. Map brushes load as
+  the same `Brush`es.
 - **Collision.** `physics` sweeps an axis-aligned box through the
   brushes (`World::trace`) and builds moves from that: slide along what
   is hit, step up ledges, find the floor, snap down stairs. That is
@@ -305,55 +329,71 @@ engine App::frame
   instructions is stopped with an error. A failing script is logged,
   never fatal. Saving a script reloads it: classes update and every
   entity keeps its state.
-- **Maps.** `gfx.load_map(path, world)` reads a map by its extension:
-  a Quake BSP (`.bsp`, BSP29 or BSP2, from ericw-tools) or the engine's
-  own `.lvl` (from `mapc`). Both become `level` data (faces, brushes,
-  lightmaps, entities, in map units), and the same loader spawns it:
-  per-texture meshes from the faces, collision from the brushes (in a
-  .bsp, its BSPX brush list, so compile with `qbsp -wrbrushes`; plain
-  BSPs only carry Quake's three fixed-size hulls), and entities from
-  the key/value pairs. 32 Quake units are a meter, and
+- **Maps.** `gfx.load_map("maps/test.lvl", world)` reads a compiled
+  map (`level` data: faces, brushes, lightmaps, entities, in map units)
+  and spawns it: per-texture meshes from the faces, collision from the
+  brushes, and entities from the key/value pairs. 32 Quake units are a
+  meter, and
   Quake's Z-up axes become Y-up. Classes: `func_door` (slides along
   "angle" by its size less "lip"; without a "targetname" it opens on
   approach, as in Quake), `func_button` (fires "target" on use),
   `trigger_once` / `trigger_multiple`, `func_illusionary` (drawn, not
   solid), other brush entities (drawn and solid), `info_player_start`
-  (returned as `MapInfo::start`). Any entity's "script" key names its
-  Lua class. Textures come from `textures/<name>.png`, the same files
-  the compilers read sizes from, so maps hold no pixels. Not yet:
-  colored or switchable lights, button travel, linked doors, map hot
-  reload. Baked light (L1): every face's lightmap is packed into one
-  atlas (`engine/src/atlas.rs`) and drawn bilinear with Quake's 2×
-  overbright; faces light never reached sample a black luxel. .lvl
-  maps carry the same lightmaps, baked by `bake`.
+  (returned as `MapInfo::start`), `prop_static` (see Props). Any
+  entity's "script" key names its Lua class. Missing keys take the
+  defaults in the `entities` catalog. Textures come from
+  `textures/<name>.png`, the same files the compiler reads sizes from,
+  so maps hold no pixels. Not yet: colored or switchable lights, button
+  travel, linked doors, map hot reload. Baked light (L1): every face's
+  lightmap is packed into one atlas (`engine/src/atlas.rs`) and drawn
+  bilinear with Quake's 2× overbright.
+- **Props.** A `prop_static` entity places a glTF model: "model"
+  `models/barrel.glb` (under `assets/`), "angle" (a turn, degrees
+  counter-clockwise from above), "scale", and "solid" (a turned box
+  around the model, on by default). `props` reads self-contained .glb
+  files (Blender's "glTF Binary" export) with PNG textures: every mesh
+  of the default scene, node transforms applied, one draw per material.
+  glTF's axes are the engine's (meters, Y up), so nothing converts.
+  Each model file loads once per map. The baker writes the light where
+  each prop stands (`_light`), and the engine draws the prop with a 1×1
+  lightmap of it, so props match their room. Not yet: animation,
+  skinning, prop shadows, bounced light on props, hot reload of models.
+  `cargo run -p props --example barrel -- assets/models/barrel.glb`
+  rebuilds the test barrel, a model made in code.
 - **mapc.** The engine's own map compiler. It parses the .map
   (`mapfile`), builds each brush's face polygons by clipping a huge
   square on every plane by the brush's other planes, cuts away faces
-  buried in other brushes of the same model (CSG), maps textures the
-  way qbsp does (Quake standard or Valve 220 axes), and writes `.lvl`:
-  a little-endian binary of counted lists (`level/src/format.rs`). No
-  BSP tree: the engine draws every face and collides against brushes.
-  worldspawn, `func_group` and `func_detail` brushes form model 0;
-  each other brush entity becomes model N (`"model" "*N"`). Texture
-  names set contents: `*lava`, `*slime`, other `*` water, `sky…`, and
-  `clip`. Tool-textured faces (trigger, clip, skip, …) are dropped, but
-  their brushes stay for bounds and collision. Not yet: merging face
-  fragments, and removing faces that face the void outside the map, so
-  a .lvl draws more polygons than a .bsp.
+  buried in other brushes of the same model (CSG), drops world faces
+  that face the void outside the map (open space is flooded from the
+  point entities on a 4-unit voxel grid; a leak keeps everything and
+  says so), merges neighboring pieces on one plane with one texture
+  mapping, maps textures as Quake's qbsp did (standard or Valve 220
+  axes), and writes `.lvl`: a little-endian binary of counted lists
+  (`level/src/format.rs`). No BSP tree: the engine draws every face and
+  collides against brushes. worldspawn and the catalog's group classes
+  (`func_group`, `func_detail`) form model 0; each other brush entity
+  becomes model N (`"model" "*N"`). Texture names set contents:
+  `*lava`, `*slime`, other `*` water, `sky…`, and `clip`. Tool-textured
+  faces (trigger, clip, skip, …) are dropped, but their brushes stay for
+  bounds and collision. Not yet: visibility data, T-junction repair.
 - **bake.** The lightmap baker, run by the `mapc` command. One sample
-  per luxel (the same `level::LuxelGrid` a .bsp uses, 16 texels per
-  luxel): the luxel's texel is mapped back onto the face, pulled inside
+  per luxel (`level::LuxelGrid`: Quake's 16 texels per luxel): the luxel's texel is mapped back onto the face, pulled inside
   the polygon if it fell off an edge, and lifted a unit off the surface.
   Each `light…` entity adds Quake's formula: brightness less distance
   ("wait" scales distance; "delay" 1 or 2 for 1/d or 1/d²), weighted by
   the arrival angle (worldspawn `_anglescale`, default 0.5), unless a
   solid world brush (or a brush entity with `"_shadow" "1"`) lies in
-  between. Worldspawn "light" is the minimum. Light is halved when
-  stored, as Quake's tool does, so 128 is full brightness. A brush a
-  sample starts inside does not shadow it, so a door shut in its frame
-  is lit once it opens. World light matches ericw-tools' `light` to
-  within 2 levels of 255 on the test map. Not yet: bounced light,
-  colored light, spotlights, sun light, several samples per luxel.
+  between. Worldspawn "light" is the minimum. Then light bounces:
+  each face's luxels form 4×4 patches that re-emit what they received,
+  times their texture's albedo (its PNG's mean brightness in linear
+  light), to every sample they can see; worldspawn `_bounce` sets the
+  passes (default 1) and `_bouncescale` the strength. Light is halved
+  when stored, as Quake's tool does, so 128 is full brightness. A brush
+  a sample starts inside does not shadow it, so a door shut in its frame
+  is lit once it opens. Direct world light matched ericw-tools' `light`
+  to within 2 levels of 255 on the test map before the BSP path was
+  retired. Not yet: colored light, spotlights, sun light, several
+  samples per luxel.
 - **Cameras.** `engine::FlyCamera` is a ready-made free-flying camera
   (no collision). Update it in `tick`, read it in `draw` with
   `camera(frame.alpha)` so motion is smooth at any frame rate. Mouse look
@@ -364,7 +404,8 @@ engine App::frame
   match on what went wrong. Each error's message covers only its own level;
   `base::chain(&err)` prints the full cause chain for logs. Games see only
   `EngineError`, whose categories (`NoGpu`, `Renderer`, ...) wrap lower-layer
-  errors as opaque causes. `anyhow` is used only in the `game` binary.
+  errors as opaque causes. `anyhow` is used only in binaries (`game`,
+  `mapc`, `fgd`) and examples.
   Broken invariants use `base::verify!`, which logs and panics only in
   debug builds.
 
@@ -379,12 +420,14 @@ engine App::frame
 | Add a texture | Put a PNG in `assets/textures/`, load it in `init` with `gfx.load_texture("textures/x.png")?`, draw with `frame.draw_textured(mesh, texture, model)` |
 | Use a camera | `Walker` to walk with collision, `FlyCamera` for exploring; or write your own by setting `frame.camera` in `draw` |
 | Add level geometry | In `game/src/level.rs`: return another `Brush` from `stone()`, or spawn an `Entity` with `models` and `colliders` |
-| Build or change a map | Edit `maps/<name>.map` (TrenchBroom, Quake format, standard or Valve 220; textures are names from `assets/textures/`). Compile it with `cargo run -p mapc -- maps/<name>.map assets/maps/<name>.lvl`, and for a lit .bsp also `ERICW_TOOLS=/path/to/ericw-tools/build tools/compile-map.sh <name>`. Commit what you compiled. Play it with `cargo run -p game -- maps/<name>.lvl` (or `.bsp`) |
-| Change what mapc builds | Contents rules: `mapc/src/solid.rs`; which entities merge into the world: `mapc/src/compile.rs`; texture mapping: `mapc/src/projection.rs`. Recompile `assets/maps/*.lvl` and run `cargo test -p mapc` (it checks the test map against ericw-tools' compile, and that the committed .lvl is current) |
-| Change how light is baked | Light entity keys and falloff: `bake/src/lights.rs`; sample placement and storage: `bake/src/face.rs`; shadows: `bake/src/occlusion.rs`. Recompile `assets/maps/*.lvl`, then expect the .lvl reference image to need an update (see below) |
+| Build or change a map | Edit `maps/<name>.map` in TrenchBroom (see Editing maps). Compile it with `cargo run -p mapc -- maps/<name>.map assets/maps/<name>.lvl` and commit both. Play it with `cargo run -p game -- maps/<name>.lvl` |
+| Change what mapc builds | Contents rules: `mapc/src/solid.rs`; void faces: `mapc/src/outside.rs`; merging: `mapc/src/merge.rs`; texture mapping: `mapc/src/projection.rs`. Recompile `assets/maps/*.lvl` and run `cargo test -p mapc` (it checks the test map's structure and that the committed .lvl is current) |
+| Change how light is baked | Light entity handling and falloff: `bake/src/lights.rs`; samples and storage: `bake/src/face.rs`; bounces: `bake/src/bounce.rs`; shadows: `bake/src/occlusion.rs`; props: `bake/src/props.rs`. Recompile `assets/maps/*.lvl`, then expect the reference image to need an update (see below) |
+| Add an entity class or key | Add it to `entities/src/catalog.rs`, give it behavior in `engine/src/map/entities.rs` (or a Lua script), and run `cargo run -p entities -- trenchbroom/RetroFPS.fgd`; a test fails while the committed FGD is stale |
+| Add a prop model | Export from Blender as glTF Binary (.glb, PNG textures, meters, Y up, front facing +Z) into `assets/models/`, then place a `prop_static` with "model" `models/<name>.glb` |
 | Change the .lvl format | `level/src/format.rs`: bump `VERSION`, keep `read` and `write` in step, then recompile `assets/maps/*.lvl` |
 | Script a map entity | Give it a `"script" "ClassName"` key and define the class in `assets/scripts/` (see `maps.lua`) |
-| Change how the test map looks | Expect the reference-image tests (`view_from_the_start_matches_the_reference` for the .bsp, `level_view_from_the_start_matches_its_reference` for the .lvl) to fail. Check the saved render in `target/reference/`, then rerun with `UPDATE_REFERENCE=1 cargo test -p engine reference` and commit `crates/engine/reference/test-map*.png` |
+| Change how the test map looks | Expect `view_from_the_start_matches_the_reference` to fail. Check the saved render in `target/reference/`, then rerun with `UPDATE_REFERENCE=1 cargo test -p engine reference` and commit `crates/engine/reference/test-map.png` |
 | Add a door, button or trigger | Spawn an `Entity` with `name` + `mover`, `usable`, or `trigger` that targets the name; see `game/src/level.rs` |
 | Script an entity | Add a class (global table with `on_*` methods) to a file in `assets/scripts/`, and set the entity's `script` to its name. New script files load on the next start; edits reload live. |
 | Tune movement | Change `walker.settings` fields, or start from `WalkSettings::arena()` / `survival()` |
@@ -410,19 +453,20 @@ or, in the engine, in `map/test_map.rs`. Shared fixtures live in
 
 | Area | Covered by |
 |---|---|
-| `base` | unit tests: slots, Vfs, watcher, image validation, PNG decode (all color types) and round-trip, mip downsampling (linear-light average, odd sizes), error chains |
+| `base` | unit tests: slots, Vfs, watcher, image validation, PNG decode (all color types), encode and round-trip, mip downsampling (linear-light average, odd sizes), luminance (linear light), error chains |
 | `platform` | unit tests: clock math (injected time), key/button mapping, cursor grab fallback order |
 | `script` | unit tests: hooks with per-instance state and names, missing hooks skipped, unknown classes rejected, every `world.*` command and `print`, reads by name and by `self` (position, mover state, player, time, nil when missing), open/close targets, bad targets rejected, entity keys surviving the trip through Lua, reload keeping state, error messages naming the file or hook, runaway loops stopped, no io/os/file access |
 | `level` | unit tests: entity keys (last value wins, set replaces, model indices), contents codes, tool texture names, luxel grids (snapping, negative texels, coords against samples), .lvl round trip, wrong magic or version, every truncation, trailing bytes, bad UTF-8, unknown flags, huge counts |
 | `mapfile` | unit tests: comments and line counting, numbers, texture names starting with `{`, quoted strings, entities with brushes and point entities, standard and Valve 220 faces, every syntax error with its line |
-| `mapc` | unit tests: planes from clockwise points, windings (base square, cut, split keeping winding and area, clip, snapping), solids (box sides, redundant and duplicate planes, open or flat brushes, contents from textures), CSG (shared walls vanish from both sides, overlaps cut, coplanar faces kept once, liquids hide only liquid), texture projection (nearest axis, ties, rotation, scale, Valve axes), texture table, PNG sizes, grouping entities into models, tool faces dropped, two-sided liquids, broken brushes skipped; `tests/test_map.rs` compiles the test map and checks it against qbsp's .bsp: same entities and models, same brush planes, bounds and contents, every qbsp face covered by one of ours with the same texels, same texture sizes, world light within 2 levels of ericw's at every qbsp face, and the committed `test.lvl` matching a fresh compile |
-| `bake` | unit tests: light entities and defaults, worldspawn settings, linear / 1/d / 1/d² falloff, angle scaling, nothing behind a face; shadows (paths through, beside, grazing or leaving a brush; escaping the brush a path starts in; which brushes cast), texels mapped back to points, edge samples pulled onto the face, a floor brightest under its light, a box's shadow and minlight, saturation, every face lit and counted |
-| `bsp` | unit tests: header and lump bounds, record sizes, the cursor, entity text (pairs, repeats, model indices, errors with line numbers), missing textures, garbage input, error messages, the BSPX brush list (axial planes from bounds, unknown versions, missing lumps, truncation), texel precision, Newell winding; `tests/test_map.rs` reads the committed test map: version, textures and sizes, models, entities, counter-clockwise faces, the floor, BRUSHLIST brushes, lightmaps that tile the lighting lump exactly, lightmap coordinates inside their grids |
+| `mapc` | unit tests: planes from clockwise points, windings (base square, cut, split keeping winding and area, clip, snapping), solids (box sides, redundant and duplicate planes, open or flat brushes, contents from textures), CSG (shared walls vanish from both sides, overlaps cut, coplanar faces kept once, liquids hide only liquid), the void (a sealed room sees only its inner faces; leaks, missing seeds and liquids seal nothing), merging (neighbors join, concave or apart pieces do not, textures never mix), texture projection (nearest axis, ties, rotation, scale, Valve axes), texture table, PNG sizes and albedos, grouping entities into models, tool faces dropped, two-sided liquids, broken brushes skipped; `tests/test_map.rs` compiles and lights the test map: entities and models as the source has them, textures sized, no face facing the void, Quake floor mapping, every face lit on its own grid, props given a light level, and the committed `test.lvl` matching a fresh compile |
+| `bake` | unit tests: light entities and defaults, worldspawn settings, linear / 1/d / 1/d² falloff, angle scaling, nothing behind a face; shadows (paths through, beside, grazing or leaving a brush; escaping the brush a path starts in; which brushes cast), texels mapped back to points, edge samples pulled onto the face, a floor brightest under its light, a box's shadow and minlight, saturation; bounces (patches tile faces, both cosines and distance, a lit floor lights a wall, a second pass returns light, black reflects nothing, bounces brighten); props' light levels (shadowed, minlight, malformed origins); every face lit and counted |
+| `entities` | unit tests: unique classes and keys, defaults fitting their types, lookups, values over defaults (malformed and missing fall back), borrowed classes, the FGD (point and solid classes, model display, choices, hidden keys, ASCII without quotes, balanced brackets); `tests/committed_fgd.rs`: the committed FGD is current, the game configuration names it, and its tool textures exist |
+| `props` | unit tests: bounds, write → read round trip (meshes, colors, shared textures), node transforms and mirroring, flat normals when missing, broken files, bad indices, non-PNG textures; `tests/barrel.rs`: the committed barrel reads back with every triangle facing out |
 | `physics` | unit tests: brush construction (planes, bevels, faces, winding), box and ray traces (fractions, normals, start-solid), slide along walls and into corners, step up and down, ground detection, snap down |
 | `render` | unit tests: camera, letterbox, vertex and uniform layouts, fog encoding, mip chain sizes, palette loading, readback padding, GPU-test skip policy |
 | `render` GPU | `tests/headless.rs`: renders offscreen and checks pixels (culling, depth, shader reload, texture mapping, nearest filtering, texture replace/destroy/size limit, mipmaps, fog curves and background, palette quantization, dither pattern, lightmap brightness and lightmap UVs) |
 | shaders | `tests/shaders.rs`: naga validates every shipped `.wgsl` (no GPU needed) |
-| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach; scripts relaying fires, spawn/use/enter/tick hooks, delayed fires, the per-tick fire cap; scripts reading the player, positions, mover state and time, and driving movers by name and `self`), mover open/close overrides, shipped scripts load, brush meshes, map conversion (axes and handedness, planes, yaw, bounds, door travel and trigger fields, player start, malformed keys), map geometry (fans in engine space, texture and lightmap UVs, which brushes are solid), map lightmap layout (UVs on each face's own luxels, the black luxel for unlit faces, unlit maps), multi-brush doors, `World::find`, lightmap atlas packing (no overlaps, luxels in place, power-of-two width), reference-image tolerances, asset registry, type conversion, debug hooks; GPU tests for texture and palette loading and hot reload, and for the real test map, both its .bsp and its .lvl compile (start and title, solid floor, button opens door 1, door 2 opens on approach, a walker climbs its stairs), and each one's view from the start against its reference image (`crates/engine/reference/test-map.png`, `test-map-lvl.png`) |
+| `engine` | unit tests: input edges, tick loop, cursor requests, look (mouse, keys, clamping), fly camera, walker (top speed, friction, jump height, stairs, walls, staying grounded down steps, air control per profile, sprint and stamina, head bob, walking through a door), world (traces, doors opening, closing, backing off, triggers once or every entry, use within reach; scripts relaying fires, spawn/use/enter/tick hooks, delayed fires, the per-tick fire cap; scripts reading the player, positions, mover state and time, and driving movers by name and `self`), mover open/close overrides, shipped scripts load, brush meshes, map conversion (axes and handedness, planes, yaw, bounds, door travel and trigger fields, player start, malformed keys), map geometry (fans in engine space, texture and lightmap UVs, which brushes are solid), map lightmap layout (UVs on each face's own luxels, the black luxel for unlit faces, unlit maps), multi-brush doors, `World::find`, lightmap atlas packing (no overlaps, luxels in place, power-of-two width), reference-image tolerances, asset registry, type conversion, debug hooks; props (placement, turned colliders, mesh data); every class handled in the catalog; GPU tests for texture and palette loading and hot reload, and for the real test map (start and title, solid floor, button opens door 1, door 2 opens on approach, a walker climbs its stairs, the barrel drawn, lit and solid, and the view from the start against the reference image `crates/engine/reference/test-map.png`) |
 | `game` | cube geometry; level layout (spawn is clear, ramp slopes, stair rises, door seals and hides); the scripted secret button with the real `sandbox.lua` (opens on the third press only; shuts behind a player who walks away, reopens with one press); landing from flight needs room; profile and palette cycling |
 
 The reference-image test compares within GPU-to-GPU tolerances (a
@@ -462,11 +506,10 @@ To move to a newer Rust: change `channel` in `rust-toolchain.toml`, run
 
 See [retro-fps-engine-plan.md](retro-fps-engine-plan.md). It starts with a
 status section: what is implemented and where each phase stands. Phase 1
-is done: BSP maps with baked lightmaps, checked by a reference-image
-test of the test map. Phase 2 is done too: collision, the walker,
-entities (spawned in code or from maps) with doors, buttons and
-triggers, and Lua scripts that read the world and drive movers. Phase 3,
-the engine's own toolchain, is under way: `mapc` compiles .map files to
-the engine's .lvl format and `bake` lights them, so the engine no longer
-needs ericw-tools. Next: tidier compiles (void faces, merged fragments),
-then glTF props.
+is done: maps with baked lightmaps, checked by a reference-image test
+of the test map. Phase 2 is done too: collision, the walker, entities
+(spawned in code or from maps) with doors, buttons and triggers, and
+Lua scripts that read the world and drive movers. Phase 3 is done: the
+engine's own toolchain (`mapc`, `bake` with bounced light, the entity
+catalog and FGD, a TrenchBroom configuration) and glTF props. Next is
+Phase 4: dynamic lights, flashlight shadows, fog volumes and 3D audio.

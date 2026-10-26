@@ -7,8 +7,8 @@
 //!   face corners' luxel coords ─────┴──► atlas UVs per vertex
 //! ```
 //!
-//! ericw-tools leaves out lightmaps of faces no light reached; those
-//! sample one reserved black luxel, as Quake draws them black.
+//! Faces without a lightmap (bake could not map their texels back onto
+//! them) sample one reserved black luxel.
 
 use std::collections::HashMap;
 

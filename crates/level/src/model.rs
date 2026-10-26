@@ -107,8 +107,7 @@ pub struct Plane {
     pub dist: f32,
 }
 
-/// What a brush is made of. Codes follow Quake's, so BSP files map
-/// directly.
+/// What a brush is made of. Codes follow Quake's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Contents {
     /// Nothing.
@@ -129,14 +128,14 @@ pub enum Contents {
     Other(i16),
 }
 
-/// Quake contents codes, as BSP files and .lvl files store them.
+/// Quake contents codes, as .lvl files store them.
 const EMPTY: i16 = -1;
 const SOLID: i16 = -2;
 const WATER: i16 = -3;
 const SLIME: i16 = -4;
 const LAVA: i16 = -5;
 const SKY: i16 = -6;
-/// ericw-tools' code for clip brushes in the BSPX brush list.
+/// ericw-tools' code for clip brushes, kept for familiarity.
 const CLIP: i16 = -8;
 
 impl Contents {

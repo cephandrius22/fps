@@ -1,18 +1,19 @@
 [package]
 name = "engine"
-description = "Engine core: main loop, world and entities, character controller, map loading (.lvl and Quake .bsp), and the API games are written against."
+description = "Engine core: main loop, world and entities, character controller, map loading (.lvl), and the API games are written against."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
 base.workspace = true
-bsp.workspace = true
+entities.workspace = true
 glam.workspace = true
 level.workspace = true
 log.workspace = true
 physics.workspace = true
 platform.workspace = true
+props.workspace = true
 render.workspace = true
 script.workspace = true
 thiserror.workspace = true

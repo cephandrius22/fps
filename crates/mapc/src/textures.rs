@@ -1,15 +1,20 @@
-//! The level's texture table, and texture sizes from PNG files.
+//! The level's texture table, and what the compiler needs to know of
+//! each texture's PNG.
 //!
 //! Faces store texel coordinates; the engine divides by the texture's
-//! size, so the compiler records each size alongside the name. Sizes
-//! come from `<dir>/<name>.png`, the same files the engine draws.
+//! size, so the compiler records each size alongside the name. The
+//! baker needs each texture's albedo (how much light it reflects).
+//! Both come from `<dir>/<name>.png`, the same files the engine draws.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use base::Image;
 use level::Texture;
 
 const PNG_EXTENSION: &str = "png";
+/// Albedo of a texture with no PNG: a mid-gray surface.
+const DEFAULT_ALBEDO: f64 = 0.5;
 
 /// A texture's width and height in texels, by name; None when unknown.
 pub type TextureSizes<'a> = dyn Fn(&str) -> Option<[u32; 2]> + 'a;
@@ -17,16 +22,22 @@ pub type TextureSizes<'a> = dyn Fn(&str) -> Option<[u32; 2]> + 'a;
 /// Sizes of `<dir>/<lowercase name>.png`.
 pub fn png_sizes(dir: &Path) -> impl Fn(&str) -> Option<[u32; 2]> + use<> {
     let dir = dir.to_path_buf();
-    move |name| png_size(&dir, name)
+    move |name| png(&dir, name).map(|image| [image.width(), image.height()])
 }
 
-fn png_size(dir: &Path, name: &str) -> Option<[u32; 2]> {
+/// Albedos of `<dir>/<lowercase name>.png`: mean brightness in linear
+/// light, mid-gray without a PNG. For `bake::bake`.
+pub fn png_albedos(dir: &Path) -> impl Fn(&str) -> f64 + use<> {
+    let dir = dir.to_path_buf();
+    move |name| png(&dir, name).map_or(DEFAULT_ALBEDO, |image| f64::from(image.luminance()))
+}
+
+fn png(dir: &Path, name: &str) -> Option<Image> {
     let path: PathBuf = dir.join(name.to_lowercase()).with_extension(PNG_EXTENSION);
     let bytes = std::fs::read(&path).ok()?;
-    let image = base::image::read_png(&bytes)
+    base::image::read_png(&bytes)
         .inspect_err(|err| log::warn!("{}: {}", path.display(), base::chain(err)))
-        .ok()?;
-    Some([image.width(), image.height()])
+        .ok()
 }
 
 /// Textures in first-use order, each listed once.
@@ -90,12 +101,16 @@ mod tests {
     }
 
     #[test]
-    fn png_sizes_read_the_asset_textures() {
+    fn sizes_and_albedos_come_from_the_asset_textures() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/textures");
         let sizes = png_sizes(&dir);
 
         let [width, height] = sizes("FLOOR").expect("assets/textures/floor.png");
         assert!(width > 0 && height > 0);
         assert_eq!(sizes("no-such-texture"), None);
+
+        let albedos = png_albedos(&dir);
+        assert!((0.0..1.0).contains(&albedos("floor")) && albedos("floor") > 0.0);
+        assert_eq!(albedos("no-such-texture"), DEFAULT_ALBEDO);
     }
 }

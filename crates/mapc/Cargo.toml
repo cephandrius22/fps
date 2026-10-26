@@ -9,14 +9,12 @@ publish.workspace = true
 anyhow.workspace = true
 bake.workspace = true
 base.workspace = true
+entities.workspace = true
 glam.workspace = true
 level.workspace = true
 log.workspace = true
 mapfile.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-bsp.workspace = true
 
 [lints]
 workspace = true

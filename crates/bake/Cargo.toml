@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+entities.workspace = true
 glam.workspace = true
 level.workspace = true
 log.workspace = true

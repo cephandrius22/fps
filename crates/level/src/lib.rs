@@ -1,13 +1,11 @@
 //! Level data: what a compiled map holds, whatever file it came from.
-//! The engine loads this model; the `bsp` crate reads it from Quake
-//! .bsp files, `mapc` builds it from TrenchBroom .map files, `bake`
-//! lights it, and `mapc` stores it in the engine's own .lvl format.
+//! `mapc` builds it from TrenchBroom .map files, `bake` lights it,
+//! `mapc` stores it in the engine's own .lvl format, and the engine
+//! loads it.
 //!
 //! ```text
-//!   .bsp ─► bsp::parse ──┐
-//!                        ├─► Level ─► engine (map loading)
-//!   .lvl ─► level::read ─┘
 //!   .map ─► mapc ─► Level ─► bake ─► level::write ─► .lvl
+//!   .lvl ─► level::read ─► Level ─► engine (map loading)
 //! ```
 //!
 //! Everything is in map space, as authored: Quake units (32 per meter

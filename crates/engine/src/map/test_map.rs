@@ -1,7 +1,5 @@
 //! The committed test map (maps/test.map) loaded on a headless GPU:
 //! collision, doors, a walker on its stairs, and a reference image.
-//! Behavior and the image are checked on both compiles: ericw-tools'
-//! .bsp and mapc's .lvl, each lit by its own baker.
 
 use base::Key;
 use platform::{Event, KeyState};
@@ -20,31 +18,22 @@ use crate::test_util::{assert_matches_reference, headless_with, repo_assets};
 use crate::walk::{WalkSettings, Walker};
 use crate::world::World;
 
-/// The test map compiled by ericw-tools and by mapc.
-const BSP: &str = "maps/test.bsp";
-const LEVEL: &str = "maps/test.lvl";
-/// Reference views of each.
-const BSP_REFERENCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/reference/test-map.png");
-const LEVEL_REFERENCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/reference/test-map-lvl.png");
+/// The test map, compiled by mapc.
+const PATH: &str = "maps/test.lvl";
+const REFERENCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/reference/test-map.png");
 /// Reference render size: small, so few pixels sit on triangle edges.
 const REFERENCE_SIZE: (u32, u32) = (320, 180);
 const DT: f32 = 1.0 / 60.0;
 const EYE: f32 = 1.6;
 const HALF: Vec3 = Vec3::new(0.3, 0.9, 0.3);
 
-/// Runs `check` on a world holding each compile of the test map; skips
-/// without a GPU.
-fn with_map(check: impl Fn(&mut World, &MapInfo)) {
-    for path in [BSP, LEVEL] {
-        // Names the compile when a check fails.
-        eprintln!("checking {path}");
-        with_map_rendering(path, |world, info, _| check(world, info));
-    }
+/// Runs `check` on a world holding the test map; skips without a GPU.
+fn with_map(check: impl FnOnce(&mut World, &MapInfo)) {
+    with_map_rendering(|world, info, _| check(world, info));
 }
 
-/// As `with_map` for the map at `path`, also handing over the (320×180)
-/// renderer.
-fn with_map_rendering(path: &str, check: impl FnOnce(&mut World, &MapInfo, &mut render::Renderer)) {
+/// As `with_map`, also handing over the (320×180) renderer.
+fn with_map_rendering(check: impl FnOnce(&mut World, &MapInfo, &mut render::Renderer)) {
     let vfs = repo_assets();
     let config = render::RenderConfig {
         internal_width: REFERENCE_SIZE.0,
@@ -62,7 +51,7 @@ fn with_map_rendering(path: &str, check: impl FnOnce(&mut World, &MapInfo, &mut 
     };
     let mut world = World::new();
 
-    let info = gfx.load_map(path, &mut world).unwrap();
+    let info = gfx.load_map(PATH, &mut world).unwrap();
     check(&mut world, &info, &mut renderer);
 }
 
@@ -80,20 +69,11 @@ fn reach_north(world: &World, from: Vec3) -> f32 {
 
 /// The view from the player start, lit by the baked lightmaps, without
 /// fog or palette (those would amplify GPU differences), against the
-/// committed reference image. Catches regressions anywhere from map
-/// parsing (or, for the .lvl, compiling and baking) to shading.
+/// committed reference image. Catches regressions anywhere from
+/// compiling and baking to shading.
 #[test]
 fn view_from_the_start_matches_the_reference() {
-    assert_view_matches(BSP, BSP_REFERENCE);
-}
-
-#[test]
-fn level_view_from_the_start_matches_its_reference() {
-    assert_view_matches(LEVEL, LEVEL_REFERENCE);
-}
-
-fn assert_view_matches(path: &str, reference: &str) {
-    with_map_rendering(path, |world, info, renderer| {
+    with_map_rendering(|world, info, renderer| {
         let start = info.start.unwrap();
         let eye = start.feet + Vec3::Y * EYE;
 
@@ -104,7 +84,7 @@ fn assert_view_matches(path: &str, reference: &str) {
         frame.submit(renderer);
 
         let shot = renderer.capture().unwrap();
-        assert_matches_reference(&shot, std::path::Path::new(reference));
+        assert_matches_reference(&shot, std::path::Path::new(REFERENCE));
     });
 }
 
@@ -181,5 +161,25 @@ fn walker_climbs_the_stairs_to_the_ledge() {
             "on the ledge: {feet:?}"
         );
         assert!(feet.x < 8.0, "stopped at the east wall: {feet:?}");
+    });
+}
+
+#[test]
+fn barrel_prop_is_drawn_lit_and_solid() {
+    with_map(|world, _| {
+        let barrel = world.find("barrel1").unwrap();
+        let entity = world.entity(barrel).unwrap();
+        assert_eq!(entity.models.len(), 2, "staves and lids");
+        assert!(
+            entity
+                .models
+                .iter()
+                .all(|m| m.texture.is_some() && m.lightmap.is_some())
+        );
+
+        // Quake (−96, 96, 0) → engine (−3, 0, −3); 0.35 m radius.
+        let from = Vec3::new(-3.0, 0.5, -1.0);
+        let trace = world.trace(from, from + Vec3::NEG_Z * 4.0, Vec3::ZERO);
+        assert!((trace.end.z + 2.65).abs() < 0.01, "{trace:?}");
     });
 }

@@ -1,10 +1,12 @@
-//! Lighting one face: a sample point per luxel, lit by every light it
-//! can see.
+//! One face's luxels: a sample point per luxel, its direct light, and
+//! the stored lightmap.
 //!
 //! ```text
 //!   luxel (x, y) ─► texel (s, t) ─► point on the face's plane
 //!                ─► pulled inside the face, if it fell outside
-//!                ─► lifted off the surface ─► Σ visible lights
+//!                ─► lifted off the surface               (Samples)
+//!                ─► Σ visible lights                     (direct)
+//!                ─► + bounced light (bounce.rs) ─► byte  (lightmap)
 //! ```
 //!
 //! Luxels on the grid's edge often fall just outside the polygon, where
@@ -27,54 +29,93 @@ const MAX_LUXEL: f64 = u8::MAX as f64;
 /// Texel axes closer to parallel than this cannot map back to points.
 const MIN_DETERMINANT: f64 = 1e-9;
 
-/// What lights a face.
+/// What lights a face directly.
 pub(crate) struct Scene<'a> {
     pub lights: &'a [Light],
     pub occluders: &'a Occluders,
     pub settings: &'a Settings,
 }
 
-/// The face's lightmap; None when its texels do not span its plane
-/// (a degenerate mapping), which leaves it unlit.
-pub(crate) fn light_face(face: &Face, scene: &Scene) -> Option<Lightmap> {
-    let to_point = TexelMap::new(face)?;
-    let grid = LuxelGrid::new(&face.texels);
-    let normal = face.normal.as_dvec3();
-    let polygon: Vec<DVec3> = face.points.iter().map(|p| p.as_dvec3()).collect();
-
-    let [width, height] = grid.size;
-    let luxels = (0..height)
-        .flat_map(|y| (0..width).map(move |x| (x, y)))
-        .map(|(x, y)| {
-            let point = to_point.point(grid.texel(x, y));
-            let sample = inside(&polygon, normal, point) + normal * SAMPLE_OFFSET;
-            luxel(light_at(sample, normal, scene))
-        })
-        .collect();
-
-    Some(Lightmap {
-        width,
-        height,
-        luxels,
-        coords: grid.coords(&face.texels),
-    })
+/// Where a face's luxels sample light.
+#[derive(Debug)]
+pub(crate) struct Samples {
+    pub grid: LuxelGrid,
+    /// One per luxel, row-major, lifted off the surface.
+    pub points: Vec<DVec3>,
+    /// The face's unit normal.
+    pub normal: DVec3,
+    /// The face's area, square map units.
+    pub area: f64,
+    /// Per corner, position in luxels.
+    coords: Vec<glam::Vec2>,
 }
 
-/// Total light at `point` on a surface facing `normal`.
-fn light_at(point: DVec3, normal: DVec3, scene: &Scene) -> f64 {
-    let lit: f64 = scene
-        .lights
-        .iter()
-        .map(|light| (light, light.at(point, normal, scene.settings)))
-        .filter(|&(light, amount)| amount > 0.0 && !scene.occluders.blocked(point, light.origin))
-        .map(|(_, amount)| amount)
-        .sum();
-    lit.max(scene.settings.minlight)
+impl Samples {
+    /// None when the face's texels do not span its plane (a degenerate
+    /// mapping), which leaves it unlit.
+    pub(crate) fn new(face: &Face) -> Option<Self> {
+        let to_point = TexelMap::new(face)?;
+        let grid = LuxelGrid::new(&face.texels);
+        let normal = face.normal.as_dvec3();
+        let polygon: Vec<DVec3> = face.points.iter().map(|p| p.as_dvec3()).collect();
+
+        let [width, height] = grid.size;
+        let points = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let point = to_point.point(grid.texel(x, y));
+                inside(&polygon, normal, point) + normal * SAMPLE_OFFSET
+            })
+            .collect();
+
+        Some(Self {
+            grid,
+            points,
+            normal,
+            area: area(&polygon),
+            coords: grid.coords(&face.texels),
+        })
+    }
+
+    /// The stored lightmap for `light` (one value per sample), no
+    /// darker than `minlight`.
+    pub(crate) fn lightmap(&self, light: &[f64], minlight: f64) -> Lightmap {
+        let [width, height] = self.grid.size;
+        Lightmap {
+            width,
+            height,
+            luxels: light.iter().map(|&l| luxel(l.max(minlight))).collect(),
+            coords: self.coords.clone(),
+        }
+    }
+}
+
+/// Direct light at each sample.
+pub(crate) fn direct(samples: &Samples, scene: &Scene) -> Vec<f64> {
+    let light_at = |point: DVec3| -> f64 {
+        scene
+            .lights
+            .iter()
+            .map(|light| (light, light.at(point, samples.normal, scene.settings)))
+            .filter(|&(light, amount)| {
+                amount > 0.0 && !scene.occluders.blocked(point, light.origin)
+            })
+            .map(|(_, amount)| amount)
+            .sum()
+    };
+    samples.points.iter().map(|&p| light_at(p)).collect()
 }
 
 /// Light as a stored luxel.
-fn luxel(light: f64) -> u8 {
+pub(crate) fn luxel(light: f64) -> u8 {
     (light * RANGE_SCALE).round().clamp(0.0, MAX_LUXEL) as u8
+}
+
+/// Area of a planar polygon (Newell's method).
+fn area(polygon: &[DVec3]) -> f64 {
+    let next = polygon.iter().cycle().skip(1);
+    let twice: DVec3 = polygon.iter().zip(next).map(|(a, b)| a.cross(*b)).sum();
+    twice.length() / 2.0
 }
 
 /// Texels back to points on the face's plane: the inverse of its
@@ -161,6 +202,8 @@ mod tests {
         Settings {
             minlight: 0.0,
             angle_scale: 0.5,
+            bounces: 0,
+            bounce_scale: 1.0,
         }
     }
 
@@ -171,6 +214,12 @@ mod tests {
             scale: 1.0,
             falloff: Falloff::Linear,
         }
+    }
+
+    /// The face's lightmap from direct light alone.
+    fn light_face(face: &Face, scene: &Scene) -> Option<Lightmap> {
+        let samples = Samples::new(face)?;
+        Some(samples.lightmap(&direct(&samples, scene), scene.settings.minlight))
     }
 
     /// Luxel (x, y) of a lightmap.
@@ -256,6 +305,19 @@ mod tests {
             ..settings()
         };
         assert_eq!(at(&bake(&dim), 4, 2), 20);
+    }
+
+    #[test]
+    fn samples_know_their_face() {
+        let samples = Samples::new(&floor(64.0, 0.0)).unwrap();
+
+        assert_eq!(samples.points.len(), 25);
+        assert_eq!(samples.area, 64.0 * 64.0);
+        assert_eq!(samples.normal, DVec3::Z);
+        assert!(
+            samples.points.iter().all(|p| p.z == SAMPLE_OFFSET),
+            "lifted"
+        );
     }
 
     #[test]

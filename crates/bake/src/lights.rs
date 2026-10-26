@@ -11,18 +11,23 @@
 //!   worldspawn "light" (or "_minlight")   least light anywhere
 //!   worldspawn "_anglescale"              how much light depends on
 //!                                         the angle it arrives at (0.5)
+//!   worldspawn "_bounce"                  bounce passes (1; 0 for none)
+//!   worldspawn "_bouncescale"             bounced light multiplier (1)
 //! ```
 //!
-//! Not yet: colors, spotlights ("target", "mangle"), sun light.
+//! Defaults come from the `entities` catalog ("light_…" classes take
+//! those of "light"). Not yet: colors, spotlights ("target", "mangle"),
+//! sun light.
 
+use entities::Keys;
 use glam::DVec3;
 use level::Entity;
 
-const LIGHT_PREFIX: &str = "light";
+/// Every class starting with this is a light; all read "light"'s keys.
+const LIGHT: &str = "light";
 const WORLDSPAWN: &str = "worldspawn";
-const DEFAULT_BRIGHTNESS: f64 = 300.0;
-const DEFAULT_SCALE: f64 = 1.0;
-const DEFAULT_ANGLE_SCALE: f64 = 0.5;
+/// A distance scale ("wait") must be positive.
+const MIN_SCALE: f64 = f64::MIN_POSITIVE;
 /// Distance at which 1/d and 1/d² lights equal their brightness.
 const INVERSE_UNIT: f64 = 128.0;
 /// "delay" values.
@@ -61,6 +66,10 @@ pub(crate) struct Settings {
     /// 0: light ignores the angle it arrives at; 1: it scales by its
     /// cosine.
     pub angle_scale: f64,
+    /// Bounce passes.
+    pub bounces: u32,
+    /// Multiplies bounced light.
+    pub bounce_scale: f64,
 }
 
 impl Light {
@@ -81,6 +90,12 @@ impl Light {
         self.reaching(dist) * angle
     }
 
+    /// Light reaching `point` from any direction (no surface to face),
+    /// before shadows.
+    pub(crate) fn around(&self, point: DVec3) -> f64 {
+        self.reaching(self.origin.distance(point))
+    }
+
     /// Light left after `dist` units.
     fn reaching(&self, dist: f64) -> f64 {
         let dist = dist * self.scale;
@@ -96,14 +111,15 @@ impl Light {
 pub(crate) fn lights(entities: &[Entity]) -> Vec<Light> {
     entities
         .iter()
-        .filter(|e| e.classname().starts_with(LIGHT_PREFIX))
+        .filter(|e| e.classname().starts_with(LIGHT))
         .filter_map(light)
         .collect()
 }
 
 fn light(entity: &Entity) -> Option<Light> {
-    let origin = vector(entity, "origin")?;
-    let falloff = match number(entity, "delay").map(|d| d as i64) {
+    let keys = Keys::as_class(entity, LIGHT);
+    let origin = keys.vector("origin")?;
+    let falloff = match keys.number("delay").map(|d| d as i64) {
         None | Some(LINEAR) => Falloff::Linear,
         Some(INVERSE) => Falloff::Inverse,
         Some(INVERSE_SQUARE) => Falloff::InverseSquare,
@@ -115,41 +131,31 @@ fn light(entity: &Entity) -> Option<Light> {
 
     Some(Light {
         origin,
-        brightness: number(entity, "light").unwrap_or(DEFAULT_BRIGHTNESS),
-        scale: number(entity, "wait")
-            .filter(|&w| w > 0.0)
-            .unwrap_or(DEFAULT_SCALE),
+        brightness: keys.number("light").unwrap_or_default(),
+        scale: keys.number("wait").unwrap_or_default().max(MIN_SCALE),
         falloff,
     })
 }
 
-/// Settings from the worldspawn entity, or defaults.
+/// Settings from the worldspawn entity, through its class's defaults.
+/// ericw-tools' names ("_minlight", "_anglesense") win when present.
 pub(crate) fn settings(entities: &[Entity]) -> Settings {
-    let world = entities.iter().find(|e| e.classname() == WORLDSPAWN);
-    let get = |key| world.and_then(|w| number(w, key));
+    let none = Entity::default();
+    let world = entities
+        .iter()
+        .find(|e| e.classname() == WORLDSPAWN)
+        .unwrap_or(&none);
+    let keys = Keys::as_class(world, WORLDSPAWN);
+    let get = |key| keys.number(key).unwrap_or_default();
 
     Settings {
-        minlight: get("_minlight").or(get("light")).unwrap_or(0.0),
-        angle_scale: get("_anglescale")
-            .or(get("_anglesense"))
-            .unwrap_or(DEFAULT_ANGLE_SCALE)
+        minlight: keys.number("_minlight").unwrap_or_else(|| get("light")),
+        angle_scale: keys
+            .number("_anglesense")
+            .unwrap_or_else(|| get("_anglescale"))
             .clamp(0.0, 1.0),
-    }
-}
-
-fn number(entity: &Entity, key: &str) -> Option<f64> {
-    entity.get(key)?.trim().parse().ok()
-}
-
-fn vector(entity: &Entity, key: &str) -> Option<DVec3> {
-    let parts: Vec<f64> = entity
-        .get(key)?
-        .split_whitespace()
-        .map(|v| v.parse().ok())
-        .collect::<Option<_>>()?;
-    match parts[..] {
-        [x, y, z] => Some(DVec3::new(x, y, z)),
-        _ => None,
+        bounces: get("_bounce").max(0.0) as u32,
+        bounce_scale: get("_bouncescale").max(0.0),
     }
 }
 
@@ -167,6 +173,9 @@ mod tests {
         Settings {
             minlight: 0.0,
             angle_scale,
+            // The catalog's defaults.
+            bounces: 1,
+            bounce_scale: 1.0,
         }
     }
 
@@ -196,17 +205,20 @@ mod tests {
     }
 
     #[test]
-    fn worldspawn_sets_minlight_and_angle_scale() {
+    fn worldspawn_sets_minlight_angle_scale_and_bounces() {
         let world = entity(&[
             ("classname", "worldspawn"),
             ("light", "20"),
             ("_anglescale", "2"),
+            ("_bounce", "3"),
+            ("_bouncescale", "0.5"),
         ]);
         let read = super::settings(&[world]);
 
         assert_eq!(read.minlight, 20.0);
         assert_eq!(read.angle_scale, 1.0, "clamped");
-        assert_eq!(super::settings(&[]), self::settings(DEFAULT_ANGLE_SCALE));
+        assert_eq!((read.bounces, read.bounce_scale), (3, 0.5));
+        assert_eq!(super::settings(&[]), self::settings(0.5));
     }
 
     #[test]

@@ -1,18 +1,16 @@
 //! Maps into the world: geometry becomes meshes, brushes become
 //! collision, lightmaps become one atlas, and Quake entity classes
-//! become engine entities. Reads Quake .bsp files (from ericw-tools) and
-//! the engine's own .lvl files (from mapc); both arrive as `level` data,
-//! so everything below is shared. The only place engine and `level`
-//! (or `bsp`) types meet.
+//! become engine entities. Reads the engine's .lvl files (compiled by
+//! mapc). The only place engine and `level` types meet.
 //!
 //! ```text
-//!   .bsp ─► bsp::parse ───┐
-//!   .lvl ─► level::read ──┴─► Level
+//!   .lvl ─► level::read ─► Level
 //!                       ┌─ textures ──► geometry.rs: textures/<name>.png
 //!                       ├─ lightmaps ─► lighting.rs: one atlas texture
-//!                       └─ entities ──► entities.rs ─┬─ meshes (geometry.rs)
-//!                                                    ├─ brushes (geometry.rs)
-//!                                                    └─ World::spawn
+//!                       ├─ entities ──► entities.rs ─┬─ meshes (geometry.rs)
+//!                       │                            ├─ brushes (geometry.rs)
+//!                       │                            └─ World::spawn
+//!                       └─ prop_static ► props.rs: glTF models (props crate)
 //!   everything passes through space.rs: Quake units, Z up → meters, Y up
 //! ```
 //!
@@ -22,6 +20,7 @@
 mod entities;
 mod geometry;
 mod lighting;
+mod props;
 mod space;
 #[cfg(test)]
 mod test_map;
@@ -38,6 +37,10 @@ use crate::world::World;
 use entities::{Spawn, brush_entity, player_start};
 use geometry::{Surface, meshes, surface};
 use lighting::lighting;
+use props::Props;
+
+/// The class placing a glTF model.
+const PROP_STATIC: &str = "prop_static";
 
 /// Quake units per meter: a 56-unit player is 1.75 m, a 64-unit door
 /// 2 m wide.
@@ -61,7 +64,7 @@ pub struct MapInfo {
     pub message: Option<String>,
 }
 
-/// Loads a .bsp or .lvl map from the asset directory and spawns its
+/// Loads a .lvl map from the asset directory and spawns its
 /// entities into `world`.
 pub(crate) fn load(gfx: &mut Gfx, world: &mut World, path: &str) -> Result<MapInfo, EngineError> {
     let load_err = |source| EngineError::Load {
@@ -72,20 +75,24 @@ pub(crate) fn load(gfx: &mut Gfx, world: &mut World, path: &str) -> Result<MapIn
     let bytes = gfx.vfs.read(path).map_err(|err| load_err(err.into()))?;
     let map = read(path, &bytes).map_err(load_err)?;
     if map.models.iter().all(|m| m.brushes.is_empty()) {
-        log::warn!(
-            "{path} has no collision brushes (for .bsp, compile with qbsp -wrbrushes): \
-             nothing is solid"
-        );
+        log::warn!("{path} has no collision brushes: nothing is solid");
     }
 
     let surfaces: Vec<Surface> = map.textures.iter().map(|t| surface(gfx, t)).collect();
     let lighting = lighting(gfx, &map, path);
     let mut info = MapInfo::default();
+    let mut props = Props::default();
 
     for entity in &map.entities {
         match entity.classname() {
             "info_player_start" => info.start = Some(player_start(entity)),
             "worldspawn" => info.message = entity.get("message").map(str::to_owned),
+            PROP_STATIC => {
+                if let Some(prop) = props.spawn(gfx, entity) {
+                    world.spawn(prop);
+                }
+                continue;
+            }
             _ => {}
         }
 
@@ -113,11 +120,10 @@ pub(crate) fn load(gfx: &mut Gfx, world: &mut World, path: &str) -> Result<MapIn
     Ok(info)
 }
 
-/// Map file extensions and the reader each needs.
-const BSP_EXTENSION: &str = "bsp";
+/// The map file extension.
 const LEVEL_EXTENSION: &str = "lvl";
 
-/// Reads map bytes as level data, choosing the reader by extension.
+/// Reads map bytes as level data; only .lvl files are maps.
 fn read(path: &str, bytes: &[u8]) -> Result<Level, BoxError> {
     let extension = std::path::Path::new(path)
         .extension()
@@ -125,10 +131,10 @@ fn read(path: &str, bytes: &[u8]) -> Result<Level, BoxError> {
         .map(str::to_lowercase);
 
     match extension.as_deref() {
-        Some(BSP_EXTENSION) => Ok(bsp::parse(bytes)?),
         Some(LEVEL_EXTENSION) => Ok(level::read(bytes)?),
-        _ => Err(
-            format!("unknown map format (expected .{BSP_EXTENSION} or .{LEVEL_EXTENSION})").into(),
-        ),
+        _ => Err(format!(
+            "unknown map format (expected .{LEVEL_EXTENSION}; compile .map files with mapc)"
+        )
+        .into()),
     }
 }

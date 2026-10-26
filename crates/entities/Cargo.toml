@@ -1,0 +1,18 @@
+[package]
+name = "entities"
+description = "Entity class definitions: every map entity class, its keys and defaults; the source of the TrenchBroom FGD."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "fgd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+glam.workspace = true
+level.workspace = true
+
+[lints]
+workspace = true

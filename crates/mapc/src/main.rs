@@ -6,8 +6,8 @@
 //!   cargo run -p mapc -- in.map out.lvl --textures path/to/textures
 //! ```
 //!
-//! Texture sizes come from `<textures>/<name>.png`, by default
-//! `assets/textures`.
+//! Texture sizes and albedos come from `<textures>/<name>.png`, by
+//! default `assets/textures`.
 
 use std::path::PathBuf;
 
@@ -59,12 +59,13 @@ fn main() -> Result<()> {
         .with_context(|| format!("read {}", args.input.display()))?;
     let map = mapfile::parse(&text).with_context(|| format!("parse {}", args.input.display()))?;
     let mut level = mapc::compile(&map, &mapc::png_sizes(&args.textures));
-    let baked = bake::bake(&mut level);
+    let baked = bake::bake(&mut level, &mapc::png_albedos(&args.textures));
     log::info!(
-        "lit {} faces ({} luxels) from {} lights",
+        "lit {} faces ({} luxels) from {} lights, {} bounces",
         baked.faces,
         baked.luxels,
-        baked.lights
+        baked.lights,
+        baked.bounces
     );
 
     std::fs::write(&args.output, level::write(&level))

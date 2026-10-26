@@ -1,6 +1,7 @@
 //! Quake entity classes → engine entities. Doors, buttons and triggers
 //! keep Quake's keys and defaults, so maps built for Quake behave as
-//! their authors expect.
+//! their authors expect. Defaults come from the `entities` catalog,
+//! which also tells the editor about them.
 //!
 //! ```text
 //!   worldspawn             → static meshes + solid brushes
@@ -13,6 +14,7 @@
 //!   any                    → "targetname" is the name, "script" the Lua class
 //! ```
 
+use entities::Keys;
 use glam::Vec3;
 
 use super::geometry::colliders;
@@ -23,10 +25,6 @@ use crate::entity::{Close, Entity, Model, Mover, Repeat, Trigger, Usable};
 
 /// Quake's player box reaches 24 units below its origin.
 const PLAYER_ORIGIN_HEIGHT: f32 = 24.0;
-/// Quake's func_door defaults: units/s, seconds, units.
-const DOOR_SPEED: f32 = 100.0;
-const DOOR_WAIT: f32 = 3.0;
-const DOOR_LIP: f32 = 8.0;
 /// A door wait of -1 means "stay open".
 const STAY_OPEN: f32 = -1.0;
 /// Untargeted doors open when the player comes this close (Quake's
@@ -136,14 +134,14 @@ fn door(entity: &level::Entity, model: &level::Model, door: Entity) -> Vec<Entit
 
 /// Quake func_door travel: `|direction · size| − lip` along "angle".
 fn door_mover(entity: &level::Entity, model: &level::Model) -> Mover {
-    let direction = move_direction(number(entity, "angle", 0.0));
+    let direction = move_direction(number(entity, "angle"));
     let size = model.maxs - model.mins;
-    let distance = direction.dot(size).abs() - number(entity, "lip", DOOR_LIP);
-    let wait = number(entity, "wait", DOOR_WAIT);
+    let distance = direction.dot(size).abs() - number(entity, "lip");
+    let wait = number(entity, "wait");
 
     Mover {
         travel: to_engine_direction(direction) * distance / UNITS_PER_METER,
-        speed: number(entity, "speed", DOOR_SPEED) / UNITS_PER_METER,
+        speed: number(entity, "speed") / UNITS_PER_METER,
         close: if wait == STAY_OPEN {
             Close::OnFire
         } else {
@@ -172,31 +170,19 @@ pub(super) fn player_start(entity: &level::Entity) -> PlayerStart {
 
     PlayerStart {
         feet: to_engine_point(feet),
-        yaw: to_engine_yaw(number(entity, "angle", 0.0)),
+        yaw: to_engine_yaw(number(entity, "angle")),
     }
 }
 
-/// A numeric key, or `default` when missing or unparsable.
-fn number(entity: &level::Entity, key: &str, default: f32) -> f32 {
-    entity
-        .get(key)
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(default)
+/// A numeric key, through its class's default when missing or
+/// malformed; 0 when neither says.
+fn number(entity: &level::Entity, key: &str) -> f32 {
+    Keys::of(entity).number(key).unwrap_or_default() as f32
 }
 
 /// A "x y z" key; zero when missing or malformed.
 fn vector(entity: &level::Entity, key: &str) -> Vec3 {
-    let parts: Vec<f32> = entity
-        .get(key)
-        .unwrap_or_default()
-        .split_whitespace()
-        .filter_map(|v| v.parse().ok())
-        .collect();
-
-    match parts[..] {
-        [x, y, z] => Vec3::new(x, y, z),
-        _ => Vec3::ZERO,
-    }
+    Keys::of(entity).vector(key).unwrap_or_default().as_vec3()
 }
 
 #[cfg(test)]
@@ -237,14 +223,23 @@ mod tests {
 
     #[test]
     fn door_moves_its_size_less_lip_along_its_angle() {
-        let up = door_mover(&entity(&[("angle", "-1")]), &door_model());
-        // 112 tall − 8 lip = 104 units up.
+        let up = door_mover(
+            &entity(&[("classname", "func_door"), ("angle", "-1")]),
+            &door_model(),
+        );
+        // Quake's defaults: 112 tall − 8 lip = 104 units up, at 100
+        // units/s, closing after 3 s.
         assert!((up.travel - Vec3::Y * 104.0 / UNITS_PER_METER).length() < EPS);
-        assert_eq!(up.speed, DOOR_SPEED / UNITS_PER_METER);
-        assert_eq!(up.close, Close::After(DOOR_WAIT));
+        assert_eq!(up.speed, 100.0 / UNITS_PER_METER);
+        assert_eq!(up.close, Close::After(3.0));
 
         let east = door_mover(
-            &entity(&[("angle", "0"), ("lip", "4"), ("wait", "-1")]),
+            &entity(&[
+                ("classname", "func_door"),
+                ("angle", "0"),
+                ("lip", "4"),
+                ("wait", "-1"),
+            ]),
             &door_model(),
         );
         assert!((east.travel - Vec3::X * 60.0 / UNITS_PER_METER).length() < EPS);
@@ -288,10 +283,36 @@ mod tests {
     }
 
     #[test]
-    fn malformed_numbers_fall_back_to_defaults() {
-        let quake = entity(&[("speed", "fast"), ("origin", "1 2")]);
+    fn every_class_handled_here_is_in_the_catalog() {
+        let handled = [
+            "worldspawn",
+            "info_player_start",
+            "func_door",
+            "func_button",
+            "trigger_once",
+            "trigger_multiple",
+            "func_illusionary",
+            "func_wall",
+            "prop_static",
+        ];
+        for name in handled {
+            assert!(
+                entities::class(name).is_some(),
+                "{name} is not in the catalog"
+            );
+        }
+    }
 
-        assert_eq!(number(&quake, "speed", DOOR_SPEED), DOOR_SPEED);
+    #[test]
+    fn malformed_numbers_fall_back_to_defaults() {
+        let quake = entity(&[
+            ("classname", "func_door"),
+            ("speed", "fast"),
+            ("origin", "1 2"),
+        ]);
+
+        assert_eq!(number(&quake, "speed"), 100.0, "func_door's default");
+        assert_eq!(number(&quake, "nope"), 0.0);
         assert_eq!(vector(&quake, "origin"), Vec3::ZERO);
     }
 }

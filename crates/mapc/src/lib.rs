@@ -1,7 +1,6 @@
 //! Map compiler: TrenchBroom .map source to the engine's level data,
-//! stored as .lvl. Replaces ericw-tools' qbsp for the engine's own
-//! format; the `mapc` command also lights the result with `bake`,
-//! replacing ericw-tools' light.
+//! stored as .lvl. Does qbsp's job for the engine's own format; the
+//! `mapc` command also lights the result with `bake`, doing light's.
 //!
 //! ```text
 //!   .map ─► mapfile::parse ─► compile() ─► Level ─► bake::bake ─► level::write ─► .lvl
@@ -19,12 +18,14 @@
 //! Modules (start with `compile.rs`):
 //!
 //! ```text
-//!   lib.rs          compile(), png_sizes()
+//!   lib.rs          compile(), png_sizes(), png_albedos()
 //!   compile.rs      entities → models; solids → level faces
 //!   solid.rs        map brush → planes, side polygons, contents
 //!   csg.rs          cut away faces inside other brushes
+//!   outside.rs      flood fill: faces facing the void outside
+//!   merge.rs        rejoin coplanar fragments
 //!   projection.rs   Quake standard / Valve 220 texture axes → texels
-//!   textures.rs     texture table; sizes from PNGs
+//!   textures.rs     texture table; sizes and albedos from PNGs
 //!   winding.rs      convex polygons: base square, cut, clip
 //!   plane.rs        f64 planes from three points
 //!   main.rs         the `mapc` command: compile, bake, write
@@ -32,6 +33,8 @@
 
 mod compile;
 mod csg;
+mod merge;
+mod outside;
 mod plane;
 mod projection;
 mod solid;
@@ -41,4 +44,4 @@ mod textures;
 mod winding;
 
 pub use compile::compile;
-pub use textures::{TextureSizes, png_sizes};
+pub use textures::{TextureSizes, png_albedos, png_sizes};

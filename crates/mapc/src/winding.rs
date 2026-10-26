@@ -79,7 +79,6 @@ impl Winding {
     }
 
     /// Wraps corners; None for fewer than three.
-    #[cfg(test)]
     pub(crate) fn new(points: Vec<DVec3>) -> Option<Self> {
         (points.len() >= 3).then_some(Self(points))
     }

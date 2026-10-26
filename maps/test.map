@@ -1,5 +1,5 @@
 // Engine test map. Generated once; edit freely (e.g. in TrenchBroom).
-// Quake units, Z up. Rebuild with mapc (.lvl) and tools/compile-map.sh (.bsp).
+// Quake units, Z up. Rebuild with: cargo run -p mapc -- maps/test.map assets/maps/test.lvl
 {
 "classname" "worldspawn"
 "message" "Engine test map"
@@ -284,4 +284,17 @@
 "classname" "light"
 "origin" "200 200 160"
 "light" "300"
+}
+{
+"classname" "prop_static"
+"targetname" "barrel1"
+"model" "models/barrel.glb"
+"origin" "-96 96 0"
+}
+{
+"classname" "prop_static"
+"model" "models/barrel.glb"
+"origin" "-136 120 0"
+"angle" "30"
+"scale" "0.8"
 }

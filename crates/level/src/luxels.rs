@@ -1,7 +1,7 @@
 //! The luxel grid: how a face's lightmap lies over its texels. Every
 //! map reader and light baker must size grids exactly alike, or faces
-//! read each other's luxels; this is Quake's rule, as ericw-tools'
-//! `light` applies it.
+//! read each other's luxels. This is Quake's rule (as its `light` tool
+//! applies it), so maps keep Quake's texel density.
 //!
 //! ```text
 //!   texels (s)   0      16      32      48
